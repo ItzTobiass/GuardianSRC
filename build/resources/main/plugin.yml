@@ -1,0 +1,30 @@
+name: guardianv3
+version: '1.0.6'
+main: org.mrqendyxz.guardianv3.Guardianv3
+api-version: '1.21'
+authors: [ MrQendyxz ]
+description: Guardian Anticheat is a light-weight anticheat, without false flags.
+depend: [ packetevents ]
+
+commands:
+  guardian:
+    description: Main command for Guardian AntiCheat.
+    usage: /guardian <info|client|freeze|reload>
+    aliases: [gv3, guardianv3]
+
+permissions:
+  guardian.alerts:
+    description: Allows player to see anticheat alerts.
+    default: op
+  guardian.client:
+    description: Allows player to check other players client brands.
+    default: op
+  guardian.bypass:
+    description: Allows player to bypass checks.
+    default: op
+  guardian.freeze:
+    description: Allows player to freeze other players.
+    default: op
+  guardian.admin:
+    description: Allows player to reload the configuration.
+    default: op

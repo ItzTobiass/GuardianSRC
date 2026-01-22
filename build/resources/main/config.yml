@@ -1,0 +1,25 @@
+# -----------------------------------------------------
+# Guardian AntiCheat Configuration - By MrQendyxz
+# -----------------------------------------------------
+
+# Discord Webhook Integration
+# Set 'enabled' to true and provide a valid URL to receive alerts on Discord.
+webhook:
+  enabled: false
+  url: "none"
+
+punishments:
+  # Punishment type: KICK, BAN, or NONE
+  type: "KICK"
+
+  # Total violation level (VL) required to trigger the punishment
+  threshold: 20
+
+  # The message sent to the player when they are kicked
+  # Use %check% to display the name of the last failed check
+  kick-message: "§c§lGuardian AntiCheat\n\n§7You have been kicked for suspicious behavior.\n§fLast Check: §c%check%"
+
+  # The message sent to the player when they are banned
+  ban-message: "§c§lGuardian AntiCheat\n\n§7You have been permanently banned for cheating.\n§fDetection: §c%check%"
+
+# Restart server after changing configuration.
