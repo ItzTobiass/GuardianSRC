@@ -1,6 +1,7 @@
 package org.mrqendyxz.guardianv3.Utils;
 
 import org.bukkit.Bukkit;
+import org.bukkit.ChatColor;
 import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.entity.Player;
 import org.mrqendyxz.guardianv3.Guardianv3;
@@ -22,38 +23,59 @@ public class AlertUtil {
 
         Guardianv3 plugin = Guardianv3.getInstance();
         FileConfiguration config = plugin.getConfig();
-
         UUID uuid = player.getUniqueId();
+
         int violations = totalViolations.getOrDefault(uuid, 0) + 1;
         totalViolations.put(uuid, violations);
 
         String brandDisplay = ClientBrandListener.getFormattedBrand(uuid);
-        String cleanBrand = brandDisplay.replaceAll("§[0-9a-fk-or]", "");
+        String cleanBrand = ChatColor.stripColor(brandDisplay);
 
-        // In-game alert
-        String message = "§c§lGuardian §8» §f" + player.getName() + " §7failed §f" + checkName +
-                " §8(§7x" + buffer + "§8) §8[§7Client: " + brandDisplay + "§8]";
+        String alertFormat = config.getString("alert-message", "§c§lGuardian §8» §f%player% §7failed §f%check% §8(§7x%buffer%§8) §8[§7Client: %brand%§8]");
+        String alertMessage = alertFormat
+                .replace("%player%", player.getName())
+                .replace("%check%", checkName)
+                .replace("%buffer%", String.valueOf(buffer))
+                .replace("%brand%", brandDisplay)
+                .replace("%vl%", String.valueOf(violations))
+                .replace("&", "§");
 
         for (Player online : Bukkit.getOnlinePlayers()) {
             if (online.isOp() || online.hasPermission("guardian.alerts")) {
-                online.sendMessage(message);
+                online.sendMessage(alertMessage);
             }
         }
 
-        // Webhook logic - Strictly checks if enabled and URL is changed
-        boolean webhookEnabled = config.getBoolean("webhook.enabled", false);
-        String webhookUrl = config.getString("webhook.url", "none");
-
-        if (webhookEnabled && !webhookUrl.equalsIgnoreCase("none") && !webhookUrl.isEmpty()) {
-            sendDiscordWebhook(webhookUrl, player.getName(), checkName, buffer, cleanBrand, violations);
+        if (config.getBoolean("webhook.enabled", false)) {
+            String url = config.getString("webhook.url", "none");
+            if (!url.equalsIgnoreCase("none") && !url.isEmpty()) {
+                sendDiscordWebhook(url, player.getName(), checkName, buffer, cleanBrand, violations);
+            }
         }
 
-        // Punishments
+        String punishmentType = config.getString("punishments.type", "NONE").toUpperCase();
+        if (punishmentType.equals("NONE")) return;
+
         int threshold = config.getInt("punishments.threshold", 20);
         if (violations >= threshold) {
-            totalViolations.remove(uuid);
-            executePunishment(plugin, config, player, checkName);
+            totalViolations.put(uuid, 0);
+            executePunishment(plugin, config, player, checkName, punishmentType);
         }
+    }
+
+    private static void executePunishment(Guardianv3 plugin, FileConfiguration config, Player player, String checkName, String type) {
+        TaskUtil.run(() -> {
+            String path = type.equals("BAN") ? "punishments.ban-message" : "punishments.kick-message";
+            String rawMsg = config.getString(path, "§cFlagged for %check%");
+            String finalMsg = ChatColor.translateAlternateColorCodes('&', rawMsg)
+                    .replace("%check%", checkName)
+                    .replace("\\n", "\n");
+
+            if (type.equals("BAN")) {
+                Bukkit.getBanList(org.bukkit.BanList.Type.NAME).addBan(player.getName(), finalMsg, null, "Guardian");
+            }
+            player.kickPlayer(finalMsg);
+        });
     }
 
     private static void sendDiscordWebhook(String webhookUrl, String playerName, String check, int buffer, String brand, int totalVl) {
@@ -65,21 +87,13 @@ public class AlertUtil {
                 conn.setRequestProperty("Content-Type", "application/json");
                 conn.setDoOutput(true);
 
-                String json = "{"
-                        + "\"embeds\": [{"
-                        + "\"title\": \"⚠️ Guardian Alert\","
-                        + "\"color\": 16733525,"
-                        + "\"fields\": ["
-                        + "{\"name\": \"Player\", \"value\": \"`" + playerName + "`\", \"inline\": true},"
-                        + "{\"name\": \"Check\", \"value\": \"`" + check + "`\", \"inline\": true},"
-                        + "{\"name\": \"Buffer\", \"value\": \"`" + buffer + "`\", \"inline\": true},"
-                        + "{\"name\": \"Client\", \"value\": \"`" + brand + "`\", \"inline\": true},"
-                        + "{\"name\": \"Total VL\", \"value\": \"`" + totalVl + "`\", \"inline\": true}"
-                        + "],"
-                        + "\"footer\": {\"text\": \"Guardian Anticheat • Alerts\"},"
-                        + "\"timestamp\": \"" + java.time.OffsetDateTime.now() + "\""
-                        + "}]"
-                        + "}";
+                String json = "{\"embeds\":[{\"title\":\"⚠️ Guardian Alert\",\"color\":16733525,\"fields\":["
+                        + "{\"name\":\"Player\",\"value\":\"`" + playerName + "`\",\"inline\":true},"
+                        + "{\"name\":\"Check\",\"value\":\"`" + check + "`\",\"inline\":true},"
+                        + "{\"name\":\"Buffer\",\"value\":\"`" + buffer + "`\",\"inline\":true},"
+                        + "{\"name\":\"Client\",\"value\":\"`" + brand + "`\",\"inline\":true},"
+                        + "{\"name\":\"Total VL\",\"value\":\"`" + totalVl + "`\",\"inline\":true}"
+                        + "],\"footer\":{\"text\":\"Guardian Anticheat\"},\"timestamp\":\"" + java.time.OffsetDateTime.now() + "\"}]}";
 
                 try (OutputStream os = conn.getOutputStream()) {
                     os.write(json.getBytes(StandardCharsets.UTF_8));
@@ -87,20 +101,6 @@ public class AlertUtil {
                 conn.getResponseCode();
                 conn.disconnect();
             } catch (Exception ignored) {}
-        });
-    }
-
-    private static void executePunishment(Guardianv3 plugin, FileConfiguration config, Player player, String checkName) {
-        String punishmentType = config.getString("punishments.type", "KICK").toUpperCase();
-        Bukkit.getScheduler().runTask(plugin, () -> {
-            String msgPath = punishmentType.equals("BAN") ? "punishments.ban-message" : "punishments.kick-message";
-            String rawMsg = config.getString(msgPath, "Flagged for %check%");
-            String finalMsg = rawMsg.replace("%check%", checkName).replace("&", "§");
-
-            if (punishmentType.equals("BAN")) {
-                Bukkit.getBanList(org.bukkit.BanList.Type.NAME).addBan(player.getName(), finalMsg, null, "Guardian");
-            }
-            player.kickPlayer(finalMsg);
         });
     }
 }

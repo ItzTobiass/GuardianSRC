@@ -10,7 +10,7 @@ public class InfoCommand implements CommandExecutor {
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
         if (args.length > 0 && args[0].equalsIgnoreCase("info")) {
             sender.sendMessage("§8§m---------------------------------------");
-            sender.sendMessage("§c§lGuardian AntiCheat §7(v1.0.6)");
+            sender.sendMessage("§c§lGuardian AntiCheat §7(v1.0.8-Beta)");
             sender.sendMessage("§7Status: §aRunning");
             sender.sendMessage("§7Developer: §fMrQendyxz");
             sender.sendMessage("§7Engine: §fPacketEvents 2.0");

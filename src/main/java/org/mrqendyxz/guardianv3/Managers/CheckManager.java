@@ -38,6 +38,10 @@ public class CheckManager implements PacketListener, Listener {
     private final StrafeCheck strafeCheck = new StrafeCheck();
     private final WallClimbCheck wallClimbCheck = new WallClimbCheck();
     private final StepCheck stepCheck = new StepCheck();
+    private final NoClipCheck noClipCheck = new NoClipCheck();
+    private final WallHitCheck wallHitCheck = new WallHitCheck();
+    private final BlinkCheck blinkCheck = new BlinkCheck();
+    private final TimerCheck timerCheck = new TimerCheck();
 
     private final FastBreakCheck fastBreakCheck = new FastBreakCheck();
     private final FastPlaceCheck fastPlaceCheck = new FastPlaceCheck();
@@ -80,6 +84,10 @@ public class CheckManager implements PacketListener, Listener {
         strafeCheck.handle(event);
         wallClimbCheck.handle(event);
         stepCheck.handle(event);
+        noClipCheck.handle(event);
+        wallHitCheck.handle(event);
+        blinkCheck.handle(event);
+        timerCheck.handle(event);
 
         fastBreakCheck.handle(event);
         fastPlaceCheck.handle(event);

@@ -15,72 +15,64 @@ public class FlyCheck {
 
     private final Map<UUID, Double> lastY = new ConcurrentHashMap<>();
     private final Map<UUID, Integer> bufferA = new ConcurrentHashMap<>();
-    private final Map<UUID, Integer> bufferB = new ConcurrentHashMap<>();
-    private final Map<UUID, Integer> bufferC = new ConcurrentHashMap<>();
+    private final Map<UUID, Integer> bufferStuck = new ConcurrentHashMap<>();
+    private final Map<UUID, Long> lastMove = new ConcurrentHashMap<>();
 
     public void handle(PacketReceiveEvent event) {
         if (!WrapperPlayClientPlayerFlying.isFlying(event.getPacketType())) return;
 
         WrapperPlayClientPlayerFlying wrapper = new WrapperPlayClientPlayerFlying(event);
-        if (!wrapper.hasPositionChanged()) return;
-
         Player player = (Player) event.getPlayer();
         UUID uuid = player.getUniqueId();
+        long now = System.currentTimeMillis();
 
-        if (player.getGameMode() == GameMode.CREATIVE || player.getAllowFlight()
-                || player.isGliding() || player.getVehicle() != null || isInWeb(player)) {
+        if (player.getGameMode() == GameMode.CREATIVE || player.getAllowFlight() || player.getVehicle() != null || isNearGround(player)) {
             lastY.put(uuid, wrapper.getLocation().getY());
-            return;
-        }
-
-        double currentY = wrapper.getLocation().getY();
-        double prevY = lastY.getOrDefault(uuid, currentY);
-        double deltaY = currentY - prevY;
-        lastY.put(uuid, currentY);
-
-        if (wrapper.isOnGround() || isInLiquid(player) || isOnClimbable(player)) {
             bufferA.put(uuid, 0);
-            bufferB.put(uuid, 0);
-            bufferC.put(uuid, 0);
+            bufferStuck.put(uuid, 0);
+            lastMove.put(uuid, now);
             return;
         }
 
-        if (Math.abs(deltaY) < 0.001) {
-            int b = bufferA.getOrDefault(uuid, 0) + 1;
-            bufferA.put(uuid, b);
-            if (b > 6) AlertUtil.sendAlert(player, "Fly (A)", b);
-        } else {
-            bufferA.put(uuid, Math.max(0, bufferA.getOrDefault(uuid, 0) - 1));
-        }
+        if (wrapper.hasPositionChanged()) {
+            lastMove.put(uuid, now);
+            bufferStuck.put(uuid, 0);
 
-        if (deltaY > 0 && player.getVelocity().getY() <= 0 && deltaY > 0.1) {
-            int b = bufferB.getOrDefault(uuid, 0) + 1;
-            bufferB.put(uuid, b);
-            if (b > 3) AlertUtil.sendAlert(player, "Fly (B)", b);
-        } else {
-            bufferB.put(uuid, 0);
-        }
+            double currentY = wrapper.getLocation().getY();
+            double prevY = lastY.getOrDefault(uuid, currentY);
+            double deltaY = currentY - prevY;
+            lastY.put(uuid, currentY);
 
-        if (deltaY < 0 && deltaY > -0.05 && !player.getLocation().getBlock().getType().isSolid()) {
-            int b = bufferC.getOrDefault(uuid, 0) + 1;
-            bufferC.put(uuid, b);
-            if (b > 5) AlertUtil.sendAlert(player, "Fly (C)", b);
-        } else {
-            bufferC.put(uuid, 0);
+            if (Math.abs(deltaY) < 0.001 && !wrapper.isOnGround()) {
+                int b = bufferA.getOrDefault(uuid, 0) + 1;
+                bufferA.put(uuid, b);
+                if (b > 8) {
+                    AlertUtil.sendAlert(player, "Fly (Type: A)", b);
+                    bufferA.put(uuid, 0);
+                }
+            } else {
+                bufferA.put(uuid, Math.max(0, bufferA.getOrDefault(uuid, 0) - 1));
+            }
+        } else if (!wrapper.isOnGround()) {
+            long last = lastMove.getOrDefault(uuid, now);
+            if (now - last > 500L) {
+                int b = bufferStuck.getOrDefault(uuid, 0) + 1;
+                bufferStuck.put(uuid, b);
+                if (b > 5) {
+                    AlertUtil.sendAlert(player, "Fly (Type: AirStuck)", b);
+                    lastMove.put(uuid, now);
+                }
+            }
         }
     }
 
-    private boolean isInLiquid(Player p) {
-        Material m = p.getLocation().getBlock().getType();
-        return m == Material.WATER || m == Material.LAVA;
-    }
-
-    private boolean isOnClimbable(Player p) {
-        Material m = p.getLocation().getBlock().getType();
-        return m == Material.LADDER || m == Material.VINE || m == Material.SCAFFOLDING;
-    }
-
-    private boolean isInWeb(Player p) {
-        return p.getLocation().getBlock().getType() == Material.COBWEB;
+    private boolean isNearGround(Player p) {
+        for (double x = -0.3; x <= 0.3; x += 0.3) {
+            for (double z = -0.3; z <= 0.3; z += 0.3) {
+                Material m = p.getLocation().add(x, -0.5, z).getBlock().getType();
+                if (m.isSolid()) return true;
+            }
+        }
+        return false;
     }
 }

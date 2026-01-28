@@ -2,41 +2,53 @@ package org.mrqendyxz.guardianv3.Checks.World;
 
 import com.github.retrooper.packetevents.event.PacketReceiveEvent;
 import com.github.retrooper.packetevents.protocol.packettype.PacketType;
-import com.github.retrooper.packetevents.wrapper.play.client.WrapperPlayClientPlayerBlockPlacement;
 import org.bukkit.entity.Player;
 import org.mrqendyxz.guardianv3.Utils.AlertUtil;
 
-import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class ScaffoldCheck {
-
-    private final Map<UUID, Long> lastPlace = new HashMap<>();
-    private final Map<UUID, Integer> buffer = new HashMap<>();
+    private final Map<UUID, Integer> buffer = new ConcurrentHashMap<>();
+    private final Map<UUID, Long> lastPlace = new ConcurrentHashMap<>();
 
     public void handle(PacketReceiveEvent event) {
+        Player player = (Player) event.getPlayer();
+        if (player == null || player.getGameMode() != org.bukkit.GameMode.SURVIVAL) return;
+
         if (event.getPacketType() == PacketType.Play.Client.PLAYER_BLOCK_PLACEMENT) {
-            Player player = (Player) event.getPlayer();
             UUID uuid = player.getUniqueId();
-            
-            if (player.getInventory().getItemInMainHand().getType().isAir()) return;
+            lastPlace.put(uuid, System.currentTimeMillis());
 
-            long now = System.currentTimeMillis();
-            long delay = now - lastPlace.getOrDefault(uuid, now);
+            float pitch = player.getLocation().getPitch();
+            double motionY = player.getVelocity().getY();
 
-            if (player.isSprinting() && player.getLocation().getPitch() > 70) {
-                if (delay < 150) {
+            if (pitch > 70 && !player.isOnGround()) {
+                if (motionY > 0.45 || motionY < 0.0) {
                     int b = buffer.getOrDefault(uuid, 0) + 1;
                     buffer.put(uuid, b);
-                    if (b > 3) {
+                    if (b > 12) {
                         AlertUtil.sendAlert(player, "Scaffold", b);
+                        buffer.put(uuid, 0);
                     }
+                    return;
                 }
-            } else {
-                buffer.put(uuid, Math.max(0, buffer.getOrDefault(uuid, 0) - 1));
             }
-            lastPlace.put(uuid, now);
+
+            int b = buffer.getOrDefault(uuid, 0) + 1;
+            buffer.put(uuid, b);
+            if (b > 7) {
+                AlertUtil.sendAlert(player, "Scaffold", b);
+                buffer.put(uuid, 0);
+            }
+        }
+    }
+
+    public void handleMove(PacketReceiveEvent event) {
+        Player player = (Player) event.getPlayer();
+        if (player != null) {
+            buffer.put(player.getUniqueId(), Math.max(0, buffer.getOrDefault(player.getUniqueId(), 0) - 1));
         }
     }
 }
