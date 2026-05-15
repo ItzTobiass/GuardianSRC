@@ -23,7 +23,6 @@ public class CheckManager implements PacketListener, Listener {
     private final KillAuraCheck killAuraCheck = new KillAuraCheck();
     private final ReachCheck reachCheck = new ReachCheck();
     private final HitBoxCheck hitBoxCheck = new HitBoxCheck();
-    private final AutoClickerCheck autoClickerCheck = new AutoClickerCheck();
     private final ShieldAttackCheck shieldAttackCheck = new ShieldAttackCheck();
 
     private final BoatFlyCheck boatFlyCheck = new BoatFlyCheck();
@@ -35,16 +34,13 @@ public class CheckManager implements PacketListener, Listener {
     private final NoFallCheck noFallCheck = new NoFallCheck();
     private final NoSlowCheck noSlowCheck = new NoSlowCheck();
     private final SpeedCheck speedCheck = new SpeedCheck();
-    private final StrafeCheck strafeCheck = new StrafeCheck();
     private final WallClimbCheck wallClimbCheck = new WallClimbCheck();
     private final StepCheck stepCheck = new StepCheck();
-    private final NoClipCheck noClipCheck = new NoClipCheck();
     private final WallHitCheck wallHitCheck = new WallHitCheck();
     private final BlinkCheck blinkCheck = new BlinkCheck();
     private final TimerCheck timerCheck = new TimerCheck();
+    private final AirJumpCheck airJumpCheck = new AirJumpCheck();
 
-    private final FastBreakCheck fastBreakCheck = new FastBreakCheck();
-    private final FastPlaceCheck fastPlaceCheck = new FastPlaceCheck();
     private final ScaffoldCheck scaffoldCheck = new ScaffoldCheck();
 
     public void register() {
@@ -69,11 +65,9 @@ public class CheckManager implements PacketListener, Listener {
         killAuraCheck.handle(event);
         reachCheck.handle(event);
         hitBoxCheck.handle(event);
-        autoClickerCheck.handle(event);
         shieldAttackCheck.handle(event);
 
         boatFlyCheck.handle(event);
-        clickTPCheck.handle(event);
         elytraFlyCheck.handle(event);
         flyCheck.handle(event);
         jesusCheck.handle(event);
@@ -81,16 +75,13 @@ public class CheckManager implements PacketListener, Listener {
         noFallCheck.handle(event);
         noSlowCheck.handle(event);
         speedCheck.handle(event);
-        strafeCheck.handle(event);
         wallClimbCheck.handle(event);
         stepCheck.handle(event);
-        noClipCheck.handle(event);
         wallHitCheck.handle(event);
         blinkCheck.handle(event);
         timerCheck.handle(event);
+        airJumpCheck.handle(event);
 
-        fastBreakCheck.handle(event);
-        fastPlaceCheck.handle(event);
         scaffoldCheck.handle(event);
     }
 

@@ -4,7 +4,6 @@ import com.github.retrooper.packetevents.event.PacketReceiveEvent;
 import com.github.retrooper.packetevents.wrapper.play.client.WrapperPlayClientPlayerFlying;
 import org.bukkit.GameMode;
 import org.bukkit.Material;
-import org.bukkit.block.Block;
 import org.bukkit.entity.Player;
 import org.mrqendyxz.guardianv3.Utils.AlertUtil;
 
@@ -12,14 +11,13 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
-public class StepCheck {
+public class AirJumpCheck {
 
     private final Map<UUID, Double> lastY = new ConcurrentHashMap<>();
+    private final Map<UUID, Double> lastDeltaY = new ConcurrentHashMap<>();
     private final Map<UUID, Boolean> wasOnGround = new ConcurrentHashMap<>();
+    private final Map<UUID, Integer> airTicks = new ConcurrentHashMap<>();
     private final Map<UUID, Integer> buffer = new ConcurrentHashMap<>();
-
-    private static final double MAX_VANILLA_STEP = 0.6;
-    private static final double MAX_DETECTABLE_STEP = 4.0;
 
     public void handle(PacketReceiveEvent event) {
         if (!WrapperPlayClientPlayerFlying.isFlying(event.getPacketType())) return;
@@ -32,37 +30,45 @@ public class StepCheck {
 
         if (player.getGameMode() == GameMode.CREATIVE || player.getGameMode() == GameMode.SPECTATOR) return;
         if (player.getAllowFlight() || player.isFlying() || player.isGliding()) return;
+        if (player.getVehicle() != null) return;
 
         UUID uuid = player.getUniqueId();
         double currentY = wrapper.getLocation().getY();
         double prevY = lastY.getOrDefault(uuid, currentY);
         double deltaY = currentY - prevY;
+        double prevDeltaY = lastDeltaY.getOrDefault(uuid, 0.0);
         boolean currentOnGround = wrapper.isOnGround();
         boolean previousOnGround = wasOnGround.getOrDefault(uuid, true);
 
         lastY.put(uuid, currentY);
+        lastDeltaY.put(uuid, deltaY);
         wasOnGround.put(uuid, currentOnGround);
 
-        if (isInLiquid(player) || player.getVehicle() != null) {
-            buffer.put(uuid, 0);
-            return;
-        }
-
-        if (!currentOnGround || !previousOnGround) {
+        if (isInLiquid(player) || isClimbable(player) || isNearGround(player)) {
+            airTicks.put(uuid, 0);
             buffer.put(uuid, Math.max(0, buffer.getOrDefault(uuid, 0) - 1));
             return;
         }
 
-        if (deltaY > MAX_VANILLA_STEP && deltaY <= MAX_DETECTABLE_STEP) {
-            if (isBypassBlock(player, currentY)) {
-                buffer.put(uuid, Math.max(0, buffer.getOrDefault(uuid, 0) - 1));
-                return;
-            }
+        if (currentOnGround) {
+            airTicks.put(uuid, 0);
+            buffer.put(uuid, Math.max(0, buffer.getOrDefault(uuid, 0) - 1));
+            return;
+        }
 
+        int ticks = airTicks.getOrDefault(uuid, 0) + 1;
+        airTicks.put(uuid, ticks);
+
+        if (ticks < 5) return;
+
+        boolean wasFalling = prevDeltaY < -0.05;
+        boolean nowGoingUp = deltaY > 0.2;
+
+        if (!previousOnGround && wasFalling && nowGoingUp) {
             int b = buffer.getOrDefault(uuid, 0) + 1;
             buffer.put(uuid, b);
             if (b >= 2) {
-                AlertUtil.sendAlert(player, "Step", b);
+                AlertUtil.sendAlert(player, "AirJump", b);
                 buffer.put(uuid, 0);
             }
         } else {
@@ -72,25 +78,23 @@ public class StepCheck {
 
     private boolean isInLiquid(Player p) {
         Material feet = p.getLocation().getBlock().getType();
-        return feet == Material.WATER || feet == Material.LAVA;
+        Material eye = p.getEyeLocation().getBlock().getType();
+        return feet == Material.WATER || feet == Material.LAVA
+                || eye == Material.WATER || eye == Material.LAVA;
     }
 
-    private boolean isBypassBlock(Player p, double currentY) {
+    private boolean isClimbable(Player p) {
+        String name = p.getLocation().getBlock().getType().name();
+        return name.contains("VINE") || name.contains("LADDER") || name.contains("SCAFFOLDING")
+                || name.contains("TWISTING_VINES") || name.contains("WEEPING_VINES");
+    }
+
+    private boolean isNearGround(Player p) {
         for (double x = -0.4; x <= 0.4; x += 0.2) {
             for (double z = -0.4; z <= 0.4; z += 0.2) {
-                for (double dy = 0; dy <= 0.5; dy += 0.25) {
-                    Block b = p.getWorld().getBlockAt(
-                            p.getLocation().clone().add(x, -dy, z).toVector().toBlockVector().toLocation(p.getWorld())
-                    );
-                    String n = b.getType().name();
-                    if (n.contains("STAIRS") || n.contains("SLAB") || n.contains("BED") ||
-                            n.contains("FENCE") || n.contains("WALL") || n.contains("SNOW") ||
-                            n.contains("TRAPDOOR") || n.contains("PLATE") || n.contains("CARPET") ||
-                            n.contains("PATH") || n.contains("CHEST") || n.contains("ANVIL") ||
-                            n.contains("ENCHANTING") || n.contains("CAULDRON")) {
-                        return true;
-                    }
-                }
+                Material m1 = p.getLocation().clone().add(x, -0.3, z).getBlock().getType();
+                Material m2 = p.getLocation().clone().add(x, -0.6, z).getBlock().getType();
+                if (m1.isSolid() || m2.isSolid()) return true;
             }
         }
         return false;
@@ -98,7 +102,9 @@ public class StepCheck {
 
     public void cleanup(UUID uuid) {
         lastY.remove(uuid);
+        lastDeltaY.remove(uuid);
         wasOnGround.remove(uuid);
+        airTicks.remove(uuid);
         buffer.remove(uuid);
     }
 }

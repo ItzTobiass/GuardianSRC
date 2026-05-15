@@ -6,15 +6,23 @@ import org.bukkit.GameMode;
 import org.bukkit.entity.Player;
 import org.mrqendyxz.guardianv3.Utils.AlertUtil;
 
-import java.util.Map;
-import java.util.UUID;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class TimerCheck {
+
+    private static final int WINDOW_MS = 2000;
+    private static final double EXPECTED_PPS = 20.0;
+    private static final double FLAG_THRESHOLD = 1.09;
+    private static final int VL_TO_FLAG = 4;
+    private static final long GRACE_PERIOD_MS = 5000;
+    private static final long MAX_PING_LENIENCY_MS = 800;
+
     private static class PlayerData {
-        long lastPacketTime;
-        double balance;
-        long lastJoin;
+        final Deque<Long> packetTimes = new ArrayDeque<>();
+        long joinTime = System.currentTimeMillis();
+        int violations = 0;
+        int consecutiveClean = 0;
     }
 
     private final Map<UUID, PlayerData> playerData = new ConcurrentHashMap<>();
@@ -23,31 +31,47 @@ public class TimerCheck {
         if (!WrapperPlayClientPlayerFlying.isFlying(event.getPacketType())) return;
 
         Player player = (Player) event.getPlayer();
-        if (player == null || player.getGameMode() == GameMode.CREATIVE || player.getAllowFlight()) return;
+        if (player == null) return;
+        if (player.getGameMode() == GameMode.CREATIVE || player.getGameMode() == GameMode.SPECTATOR) return;
+        if (player.getAllowFlight() || player.isFlying()) return;
 
         UUID uuid = player.getUniqueId();
-        long currentTime = System.currentTimeMillis();
-        PlayerData data = playerData.computeIfAbsent(uuid, k -> {
-            PlayerData pd = new PlayerData();
-            pd.lastPacketTime = currentTime;
-            pd.lastJoin = currentTime;
-            pd.balance = -100.0;
-            return pd;
-        });
+        long now = System.currentTimeMillis();
 
-        if (currentTime - data.lastJoin < 5000) return;
+        PlayerData data = playerData.computeIfAbsent(uuid, k -> new PlayerData());
 
-        long diff = currentTime - data.lastPacketTime;
-        data.lastPacketTime = currentTime;
+        if (now - data.joinTime < GRACE_PERIOD_MS) return;
 
-        if (diff > 2000) return;
+        int ping = player.getPing();
+        if (ping > 500) return;
 
-        data.balance += 50.0;
-        data.balance -= diff;
+        long pingLeniency = Math.min((long) (ping * 1.5), MAX_PING_LENIENCY_MS);
+        long effectiveWindow = WINDOW_MS + pingLeniency;
 
-        if (data.balance > 50.0) {
-            AlertUtil.sendAlert(player, "Timer", (int) data.balance);
-            data.balance = -50.0;
+        data.packetTimes.addLast(now);
+
+        while (!data.packetTimes.isEmpty() && data.packetTimes.peekFirst() < now - effectiveWindow) {
+            data.packetTimes.pollFirst();
+        }
+
+        int count = data.packetTimes.size();
+        double effectiveWindowSec = effectiveWindow / 1000.0;
+        double pps = count / effectiveWindowSec;
+
+        if (pps > EXPECTED_PPS * FLAG_THRESHOLD) {
+            data.consecutiveClean = 0;
+            data.violations++;
+
+            if (data.violations >= VL_TO_FLAG) {
+                AlertUtil.sendAlert(player, "Timer", data.violations);
+            }
+        } else {
+            data.consecutiveClean++;
+
+            if (data.consecutiveClean >= 20) {
+                data.violations = Math.max(0, data.violations - 1);
+                data.consecutiveClean = 0;
+            }
         }
     }
 

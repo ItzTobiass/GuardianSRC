@@ -9,7 +9,7 @@ depend: [ packetevents ]
 commands:
   guardian:
     description: Main command for Guardian AntiCheat.
-    usage: /guardian <info|client|freeze|reload>
+    usage: /guardian <info|client|freeze|reload|changelog|idea>
     aliases: [gv3, guardianv3]
 
 permissions:
@@ -27,4 +27,7 @@ permissions:
     default: op
   guardian.admin:
     description: Allows player to reload the configuration.
+    default: op
+  guardian.ideas:
+    description: Allows player to make some ideas to get in the plugin.
     default: op
