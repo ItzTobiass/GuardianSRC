@@ -16,6 +16,7 @@ public class JesusCheck {
 
     private final Map<UUID, Integer> buffer = new ConcurrentHashMap<>();
     private final Map<UUID, Double> lastY = new ConcurrentHashMap<>();
+    private final Map<UUID, Long> lastInWater = new ConcurrentHashMap<>();
 
     public void handle(PacketReceiveEvent event) {
         if (!WrapperPlayClientPlayerFlying.isFlying(event.getPacketType())) return;
@@ -31,16 +32,21 @@ public class JesusCheck {
         if (player.hasPotionEffect(org.bukkit.potion.PotionEffectType.WATER_BREATHING)) return;
 
         UUID uuid = player.getUniqueId();
+        long now = System.currentTimeMillis();
         double currentY = wrapper.getLocation().getY();
         double prevY = lastY.getOrDefault(uuid, currentY);
         lastY.put(uuid, currentY);
 
         boolean onGround = wrapper.isOnGround();
         boolean aboveLiquid = isAboveLiquid(player);
-        boolean inLiquid = player.isInWater();
+        boolean inLiquid = player.isInWater() || checkWater(player);
         boolean nearSolid = isNearSolid(player);
 
-        if (nearSolid || inLiquid) {
+        if (inLiquid) {
+            lastInWater.put(uuid, now);
+        }
+
+        if (nearSolid || inLiquid || (now - lastInWater.getOrDefault(uuid, 0L) < 800)) {
             buffer.put(uuid, Math.max(0, buffer.getOrDefault(uuid, 0) - 1));
             return;
         }
@@ -58,7 +64,7 @@ public class JesusCheck {
 
         if (aboveLiquid && !onGround) {
             double deltaY = currentY - prevY;
-            boolean validJump = deltaY > 0.1 && deltaY < 0.45;
+            boolean validJump = deltaY > 0.05 && deltaY < 0.6;
 
             if (!validJump) {
                 int b = buffer.getOrDefault(uuid, 0) + 1;
@@ -75,6 +81,12 @@ public class JesusCheck {
         }
 
         buffer.put(uuid, Math.max(0, buffer.getOrDefault(uuid, 0) - 1));
+    }
+
+    private boolean checkWater(Player player) {
+        Material m = player.getLocation().getBlock().getType();
+        Material mDown = player.getLocation().clone().subtract(0, 0.5, 0).getBlock().getType();
+        return m == Material.WATER || m == Material.LAVA || mDown == Material.WATER || mDown == Material.LAVA;
     }
 
     private boolean isAboveLiquid(Player player) {
@@ -101,5 +113,6 @@ public class JesusCheck {
     public void cleanup(UUID uuid) {
         buffer.remove(uuid);
         lastY.remove(uuid);
+        lastInWater.remove(uuid);
     }
 }

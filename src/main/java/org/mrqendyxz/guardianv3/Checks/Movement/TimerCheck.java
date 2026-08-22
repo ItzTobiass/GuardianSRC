@@ -6,23 +6,17 @@ import org.bukkit.GameMode;
 import org.bukkit.entity.Player;
 import org.mrqendyxz.guardianv3.Utils.AlertUtil;
 
-import java.util.*;
+import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class TimerCheck {
 
-    private static final int WINDOW_MS = 2000;
-    private static final double EXPECTED_PPS = 20.0;
-    private static final double FLAG_THRESHOLD = 1.09;
-    private static final int VL_TO_FLAG = 4;
-    private static final long GRACE_PERIOD_MS = 5000;
-    private static final long MAX_PING_LENIENCY_MS = 800;
-
     private static class PlayerData {
-        final Deque<Long> packetTimes = new ArrayDeque<>();
-        long joinTime = System.currentTimeMillis();
+        long lastTime = 0;
+        double balance = 0;
         int violations = 0;
-        int consecutiveClean = 0;
+        long joinTime = System.currentTimeMillis();
     }
 
     private final Map<UUID, PlayerData> playerData = new ConcurrentHashMap<>();
@@ -40,38 +34,45 @@ public class TimerCheck {
 
         PlayerData data = playerData.computeIfAbsent(uuid, k -> new PlayerData());
 
-        if (now - data.joinTime < GRACE_PERIOD_MS) return;
-
-        int ping = player.getPing();
-        if (ping > 500) return;
-
-        long pingLeniency = Math.min((long) (ping * 1.5), MAX_PING_LENIENCY_MS);
-        long effectiveWindow = WINDOW_MS + pingLeniency;
-
-        data.packetTimes.addLast(now);
-
-        while (!data.packetTimes.isEmpty() && data.packetTimes.peekFirst() < now - effectiveWindow) {
-            data.packetTimes.pollFirst();
+        if (now - data.joinTime < 5000) {
+            data.lastTime = now;
+            return;
         }
 
-        int count = data.packetTimes.size();
-        double effectiveWindowSec = effectiveWindow / 1000.0;
-        double pps = count / effectiveWindowSec;
+        if (player.getPing() > 500) {
+            data.lastTime = now;
+            return;
+        }
 
-        if (pps > EXPECTED_PPS * FLAG_THRESHOLD) {
-            data.consecutiveClean = 0;
-            data.violations++;
+        if (data.lastTime == 0) {
+            data.lastTime = now;
+            return;
+        }
 
-            if (data.violations >= VL_TO_FLAG) {
-                AlertUtil.sendAlert(player, "Timer", data.violations);
+        long elapsed = now - data.lastTime;
+        data.lastTime = now;
+
+        if (elapsed > 2000) {
+            return;
+        }
+
+        data.balance += elapsed;
+        data.balance -= 50.0;
+
+        if (data.balance > 1000.0) {
+            data.balance = 1000.0;
+        }
+
+        if (data.balance < -150.0) {
+            int b = data.violations + 1;
+            data.violations = b;
+            if (b > 4) {
+                AlertUtil.sendAlert(player, "Timer", b);
+                data.violations = 0;
             }
+            data.balance = 0;
         } else {
-            data.consecutiveClean++;
-
-            if (data.consecutiveClean >= 20) {
-                data.violations = Math.max(0, data.violations - 1);
-                data.consecutiveClean = 0;
-            }
+            data.violations = Math.max(0, data.violations - 1);
         }
     }
 

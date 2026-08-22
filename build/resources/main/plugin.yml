@@ -1,5 +1,5 @@
 name: guardianv3
-version: '1.0.6'
+version: '1.1.7-NinjaMelon'
 main: org.mrqendyxz.guardianv3.Guardianv3
 api-version: '1.21'
 authors: [ MrQendyxz ]
@@ -9,7 +9,7 @@ depend: [ packetevents ]
 commands:
   guardian:
     description: Main command for Guardian AntiCheat.
-    usage: /guardian <info|client|freeze|reload>
+    usage: /guardian <info|client|freeze|reload|changelog|idea>
     aliases: [gv3, guardianv3]
 
 permissions:
@@ -27,4 +27,7 @@ permissions:
     default: op
   guardian.admin:
     description: Allows player to reload the configuration.
+    default: op
+  guardian.ideas:
+    description: Allows player to make some ideas to get in the plugin.
     default: op

@@ -16,17 +16,27 @@ import java.util.concurrent.ConcurrentHashMap;
 
 public class FlyCheck {
 
-    private final Map<UUID, Double> lastY = new ConcurrentHashMap<>();
-    private final Map<UUID, Double> predictedVelocityY = new ConcurrentHashMap<>();
-    private final Map<UUID, Integer> bufferA = new ConcurrentHashMap<>();
-    private final Map<UUID, Integer> bufferB = new ConcurrentHashMap<>();
-    private final Map<UUID, Integer> bufferStuck = new ConcurrentHashMap<>();
-    private final Map<UUID, Long> lastMove = new ConcurrentHashMap<>();
-    private final Map<UUID, Location> lastSafeLocation = new ConcurrentHashMap<>();
-    private final Map<UUID, Integer> airTicks = new ConcurrentHashMap<>();
+    private final Map<UUID, Double>  lastY               = new ConcurrentHashMap<>();
+    private final Map<UUID, Double>  predictedVelocityY  = new ConcurrentHashMap<>();
+    private final Map<UUID, Integer> bufferA             = new ConcurrentHashMap<>();
+    private final Map<UUID, Integer> bufferB             = new ConcurrentHashMap<>();
+    private final Map<UUID, Integer> bufferStuck         = new ConcurrentHashMap<>();
+    private final Map<UUID, Long>    lastMove            = new ConcurrentHashMap<>();
+    private final Map<UUID, Location>lastSafeLocation    = new ConcurrentHashMap<>();
+    private final Map<UUID, Integer> airTicks            = new ConcurrentHashMap<>();
+    private final Map<UUID, Integer> velocityGraceTicks  = new ConcurrentHashMap<>();
+    private final Map<UUID, Integer> elytraGraceTicks    = new ConcurrentHashMap<>();
+    private final Map<UUID, Boolean> wasGliding          = new ConcurrentHashMap<>();
 
-    private static final double GRAVITY = 0.08;
-    private static final double DRAG = 0.98;
+    private static final double GRAVITY        = 0.08;
+    private static final double DRAG           = 0.98;
+    private static final int    VELOCITY_GRACE = 12;
+    private static final int    ELYTRA_GRACE   = 20;
+
+    public void notifyVelocity(UUID uuid) {
+        velocityGraceTicks.put(uuid, VELOCITY_GRACE);
+        predictedVelocityY.remove(uuid);
+    }
 
     public void handle(PacketReceiveEvent event) {
         if (!WrapperPlayClientPlayerFlying.isFlying(event.getPacketType())) return;
@@ -35,12 +45,28 @@ public class FlyCheck {
         Player player = (Player) event.getPlayer();
         if (player == null) return;
 
-        UUID uuid = player.getUniqueId();
-        long now = System.currentTimeMillis();
+        UUID uuid       = player.getUniqueId();
+        long now        = System.currentTimeMillis();
+        boolean gliding = player.isGliding();
+
+        if (wasGliding.getOrDefault(uuid, false) && !gliding) {
+            elytraGraceTicks.put(uuid, ELYTRA_GRACE);
+            predictedVelocityY.remove(uuid);
+        }
+        wasGliding.put(uuid, gliding);
+
+        int elytraGrace = elytraGraceTicks.getOrDefault(uuid, 0);
+        if (elytraGrace > 0) {
+            elytraGraceTicks.put(uuid, elytraGrace - 1);
+            lastY.put(uuid, wrapper.getLocation().getY());
+            predictedVelocityY.remove(uuid);
+            bufferA.put(uuid, Math.max(0, bufferA.getOrDefault(uuid, 0) - 1));
+            return;
+        }
 
         if (player.getGameMode() == GameMode.CREATIVE || player.getGameMode() == GameMode.SPECTATOR
                 || player.getAllowFlight() || player.isFlying()
-                || player.getVehicle() != null || player.isGliding()
+                || player.getVehicle() != null || gliding
                 || player.getLocation().getBlock().isLiquid()
                 || isNearGround(player) || isClimbable(player)) {
 
@@ -84,8 +110,8 @@ public class FlyCheck {
         bufferStuck.put(uuid, 0);
 
         double currentY = wrapper.getLocation().getY();
-        double prevY = lastY.getOrDefault(uuid, currentY);
-        double deltaY = currentY - prevY;
+        double prevY    = lastY.getOrDefault(uuid, currentY);
+        double deltaY   = currentY - prevY;
         lastY.put(uuid, currentY);
 
         boolean onGround = wrapper.isOnGround();
@@ -93,6 +119,8 @@ public class FlyCheck {
         if (onGround) {
             predictedVelocityY.remove(uuid);
             airTicks.put(uuid, 0);
+            velocityGraceTicks.put(uuid, 0);
+            elytraGraceTicks.put(uuid, 0);
             bufferA.put(uuid, Math.max(0, bufferA.getOrDefault(uuid, 0) - 2));
             bufferB.put(uuid, Math.max(0, bufferB.getOrDefault(uuid, 0) - 2));
             lastSafeLocation.put(uuid, player.getLocation());
@@ -102,7 +130,22 @@ public class FlyCheck {
         int ticks = airTicks.getOrDefault(uuid, 0) + 1;
         airTicks.put(uuid, ticks);
 
-        double predictedVY = predictedVelocityY.getOrDefault(uuid, deltaY);
+        int grace = velocityGraceTicks.getOrDefault(uuid, 0);
+        if (grace > 0) {
+            velocityGraceTicks.put(uuid, grace - 1);
+            predictedVelocityY.put(uuid, deltaY);
+            lastY.put(uuid, currentY);
+            bufferA.put(uuid, Math.max(0, bufferA.getOrDefault(uuid, 0) - 1));
+            return;
+        }
+
+        if (deltaY > 0.5 && ticks <= 3) {
+            velocityGraceTicks.put(uuid, VELOCITY_GRACE);
+            predictedVelocityY.put(uuid, deltaY);
+            return;
+        }
+
+        double predictedVY    = predictedVelocityY.getOrDefault(uuid, deltaY);
         double expectedDeltaY = (predictedVY - GRAVITY) * DRAG;
         predictedVelocityY.put(uuid, expectedDeltaY);
 
@@ -143,8 +186,8 @@ public class FlyCheck {
     }
 
     private boolean isClimbable(Player p) {
-        Material m = p.getLocation().getBlock().getType();
-        String name = m.name();
+        Material m    = p.getLocation().getBlock().getType();
+        String   name = m.name();
         return name.contains("VINE") || name.contains("LADDER") || name.contains("SCAFFOLDING")
                 || name.contains("TWISTING_VINES") || name.contains("WEEPING_VINES");
     }
@@ -168,5 +211,8 @@ public class FlyCheck {
         lastMove.remove(uuid);
         lastSafeLocation.remove(uuid);
         airTicks.remove(uuid);
+        velocityGraceTicks.remove(uuid);
+        elytraGraceTicks.remove(uuid);
+        wasGliding.remove(uuid);
     }
 }

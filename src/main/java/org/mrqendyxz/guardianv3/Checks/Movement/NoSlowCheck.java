@@ -13,13 +13,15 @@ import java.util.concurrent.ConcurrentHashMap;
 
 public class NoSlowCheck {
 
-    private final Map<UUID, Integer> buffer = new ConcurrentHashMap<>();
-    private final Map<UUID, Double> lastSpeed = new ConcurrentHashMap<>();
+    private final Map<UUID, Integer> buffer          = new ConcurrentHashMap<>();
+    private final Map<UUID, Double>  lastSpeed       = new ConcurrentHashMap<>();
+    private final Map<UUID, Boolean> wasGliding      = new ConcurrentHashMap<>();
+    private final Map<UUID, Integer> elytraGrace     = new ConcurrentHashMap<>();
 
-    private static final double BASE_WALK = 0.215;
-    private static final double BASE_SPRINT = 0.29;
-    private static final double ITEM_USE_MULTIPLIER = 0.4;
-    private static final double JUMP_HORIZONTAL_MULTIPLIER = 1.2;
+    private static final double BASE_WALK                  = 0.22;
+    private static final double BASE_SPRINT                = 0.29;
+    private static final double ITEM_USE_MULTIPLIER        = 0.42;
+    private static final int    ELYTRA_GRACE_TICKS         = 20;
 
     public void handle(PacketReceiveEvent event) {
         if (!WrapperPlayClientPlayerFlying.isFlying(event.getPacketType())) return;
@@ -30,24 +32,44 @@ public class NoSlowCheck {
         Player player = (Player) event.getPlayer();
         if (player == null) return;
         if (player.getGameMode() == GameMode.CREATIVE || player.getGameMode() == GameMode.SPECTATOR) return;
-        if (!player.isHandRaised()) return;
 
-        UUID uuid = player.getUniqueId();
+        UUID uuid    = player.getUniqueId();
+        boolean gliding = player.isGliding();
+
+        if (wasGliding.getOrDefault(uuid, false) && !gliding) {
+            elytraGrace.put(uuid, ELYTRA_GRACE_TICKS);
+        }
+        wasGliding.put(uuid, gliding);
+
+        if (gliding) {
+            lastSpeed.remove(uuid);
+            return;
+        }
+
+        int grace = elytraGrace.getOrDefault(uuid, 0);
+        if (grace > 0) {
+            elytraGrace.put(uuid, grace - 1);
+            lastSpeed.remove(uuid);
+            return;
+        }
+
+        if (!player.isHandRaised()) return;
 
         double deltaX = wrapper.getLocation().getX() - player.getLocation().getX();
         double deltaZ = wrapper.getLocation().getZ() - player.getLocation().getZ();
-        double speed = Math.sqrt(deltaX * deltaX + deltaZ * deltaZ);
+        double speed  = Math.sqrt(deltaX * deltaX + deltaZ * deltaZ);
 
         double base = player.isSprinting() ? BASE_SPRINT : BASE_WALK;
+
+        if (player.hasPotionEffect(PotionEffectType.SPEED)) {
+            int amp = player.getPotionEffect(PotionEffectType.SPEED).getAmplifier() + 1;
+            base += amp * 0.062;
+        }
+
         double limit = base * ITEM_USE_MULTIPLIER;
 
         if (!wrapper.isOnGround()) {
-            limit *= JUMP_HORIZONTAL_MULTIPLIER;
-        }
-
-        if (player.hasPotionEffect(PotionEffectType.SPEED)) {
-            int amp = player.getPotionEffect(PotionEffectType.SPEED).getAmplifier();
-            limit *= (1.0 + (amp + 1) * 0.2);
+            limit = base * 1.38;
         }
 
         if (player.hasPotionEffect(PotionEffectType.SLOWNESS)) {
@@ -55,7 +77,7 @@ public class NoSlowCheck {
             limit *= (1.0 - (amp + 1) * 0.15);
         }
 
-        limit += 0.03;
+        limit += 0.04;
 
         Double prev = lastSpeed.get(uuid);
         lastSpeed.put(uuid, speed);
@@ -65,8 +87,7 @@ public class NoSlowCheck {
         if (speed > limit) {
             int b = buffer.getOrDefault(uuid, 0) + 1;
             buffer.put(uuid, b);
-
-            if (b >= 6) {
+            if (b >= 8) {
                 AlertUtil.sendAlert(player, "NoSlow", b);
                 buffer.put(uuid, 0);
             }
@@ -78,5 +99,7 @@ public class NoSlowCheck {
     public void cleanup(UUID uuid) {
         buffer.remove(uuid);
         lastSpeed.remove(uuid);
+        wasGliding.remove(uuid);
+        elytraGrace.remove(uuid);
     }
 }

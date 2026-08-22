@@ -26,11 +26,11 @@ public class ChangelogCommand implements CommandExecutor {
 
     private void sendChangelog(CommandSender sender) {
         sender.sendMessage("§8§m--------------------------------------");
-        sender.sendMessage("§c§lGuardian Anticheat §7- §fChangelog v1.1.5");
+        sender.sendMessage("§c§lGuardian Anticheat §7- §fChangelog v1.1.7-Alpha");
         sender.sendMessage("");
-        sender.sendMessage("§8» §bCombat: §7None.");
-        sender.sendMessage("§8» §bMovement: §7Improved WallClimb Check!");
-        sender.sendMessage("§8» §bWorld: §7None.");
+        sender.sendMessage("§8» §bCombat: §7Disabled KillAura Check.");
+        sender.sendMessage("§8» §bMovement: §7FlyCheck bug fixed.");
+        sender.sendMessage("§8» §bWorld: §7Recoded ScaffoldCheck.");
         sender.sendMessage("§8» §bCommands: §7None.");
         sender.sendMessage("§8» §bOther: §7None.");
         sender.sendMessage("");

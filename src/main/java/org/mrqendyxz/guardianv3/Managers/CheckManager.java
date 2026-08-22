@@ -20,7 +20,6 @@ import org.mrqendyxz.guardianv3.Utils.ClientBrandListener;
 
 public class CheckManager implements PacketListener, Listener {
 
-    private final KillAuraCheck killAuraCheck = new KillAuraCheck();
     private final ReachCheck reachCheck = new ReachCheck();
     private final HitBoxCheck hitBoxCheck = new HitBoxCheck();
     private final ShieldAttackCheck shieldAttackCheck = new ShieldAttackCheck();
@@ -41,7 +40,7 @@ public class CheckManager implements PacketListener, Listener {
     private final TimerCheck timerCheck = new TimerCheck();
     private final AirJumpCheck airJumpCheck = new AirJumpCheck();
 
-    private final ScaffoldCheck scaffoldCheck = new ScaffoldCheck();
+
 
     public void register() {
         PacketEvents.getAPI().getEventManager().registerListener(this, PacketListenerPriority.NORMAL);
@@ -62,7 +61,6 @@ public class CheckManager implements PacketListener, Listener {
 
         if (player.isOp() || player.hasPermission("guardian.bypass")) return;
 
-        killAuraCheck.handle(event);
         reachCheck.handle(event);
         hitBoxCheck.handle(event);
         shieldAttackCheck.handle(event);
@@ -82,7 +80,7 @@ public class CheckManager implements PacketListener, Listener {
         timerCheck.handle(event);
         airJumpCheck.handle(event);
 
-        scaffoldCheck.handle(event);
+
     }
 
     @Override
