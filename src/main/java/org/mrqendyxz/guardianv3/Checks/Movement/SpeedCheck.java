@@ -2,103 +2,62 @@ package org.mrqendyxz.guardianv3.Checks.Movement;
 
 import com.github.retrooper.packetevents.event.PacketReceiveEvent;
 import com.github.retrooper.packetevents.wrapper.play.client.WrapperPlayClientPlayerFlying;
+import org.bukkit.GameMode;
 import org.bukkit.Location;
-import org.bukkit.Material;
 import org.bukkit.entity.Player;
-import org.bukkit.util.Vector;
-import org.mrqendyxz.guardianv3.Utils.AlertUtil;
-import org.mrqendyxz.guardianv3.Utils.TaskUtil;
-import org.mrqendyxz.guardianv3.Utils.VelocityProtection;
-
+import org.mrqendyxz.guardianv3.Guardianv3;
+import org.mrqendyxz.guardianv3.Utils.*;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
-public class SpeedCheck {
-    private final Map<UUID, Integer> buffer = new ConcurrentHashMap<>();
-    private final Map<UUID, Long> lastJoin = new ConcurrentHashMap<>();
-    private final Map<UUID, Location> lastSafeLocation = new ConcurrentHashMap<>();
-    private final Map<UUID, Long> lastGlide = new ConcurrentHashMap<>();
-
+public class SpeedCheck implements org.mrqendyxz.guardianv3.Checks.Check {
+    private static final class State {
+        final MovementEvidence evidence = new MovementEvidence();
+        long glideUntil;
+        double previousSpeed;
+    }
+    private final Map<UUID, State> states = new ConcurrentHashMap<>();
     public void handle(PacketReceiveEvent event) {
         if (!WrapperPlayClientPlayerFlying.isFlying(event.getPacketType())) return;
-        WrapperPlayClientPlayerFlying wrapper = new WrapperPlayClientPlayerFlying(event);
-        Player player = (Player) event.getPlayer();
-        if (player == null || player.getAllowFlight()) return;
-
-        UUID uuid = player.getUniqueId();
-        long now = System.currentTimeMillis();
-
-        if (player.isGliding()) {
-            lastGlide.put(uuid, now);
+        var packet = new WrapperPlayClientPlayerFlying(event);
+        if (!packet.hasPositionChanged()) return;
+        Player player = event.getPlayer();
+        if (PacketContext.duplicatePosition(player)) return;
+        State state = states.computeIfAbsent(player.getUniqueId(), id -> new State());
+        long now = PacketContext.now();
+        Location at = PacketContext.location(player);
+        if (player.isGliding()) state.glideUntil = now + 500;
+        if (MovementGuards.ordinary(player) || player.getGameMode() == GameMode.CREATIVE || player.getGameMode() == GameMode.SPECTATOR
+                || player.getAllowFlight() || player.isInsideVehicle() || player.isRiptiding()
+                || player.isGliding() || now < state.glideUntil
+                || WorldCache.liquid(at)
+                || !MovementEnvironment.loaded(at)) {
+            state.evidence.reset();
+            state.previousSpeed = 0;
+            SetbackUtil.reject(player);
             return;
         }
-
-        if (now - lastGlide.getOrDefault(uuid, 0L) < 2000) return;
-        if (player.getLocation().getBlock().isLiquid()) return;
-
-        if (VelocityProtection.shouldBypass(player)) {
-            buffer.put(uuid, 0);
-            return;
+        double speed = Math.hypot(PacketContext.deltaX(player), PacketContext.deltaZ(player));
+        double mult = MovementGuards.speedMultiplier(player);
+        double max = .42 * mult;
+        if (MovementGuards.iceActive(player)) max = Math.max(max, 1.6);
+        if (MovementGuards.ceilingActive(player)) max += .22 * mult;
+        if (!MovementEnvironment.supported(PacketContext.previous(player), at) || Math.abs(PacketContext.deltaY(player)) > 1e-4) {
+            max += .18 * mult;
         }
-
-        if (now - lastJoin.getOrDefault(uuid, now) < 5000) {
-            lastJoin.putIfAbsent(uuid, now);
-            return;
-        }
-
-        if (!wrapper.hasPositionChanged()) return;
-
-        double deltaX = wrapper.getLocation().getX() - player.getLocation().getX();
-        double deltaZ = wrapper.getLocation().getZ() - player.getLocation().getZ();
-        double speed = Math.sqrt(deltaX * deltaX + deltaZ * deltaZ);
-
-        double max = 0.34;
-        if (player.isSprinting()) max = 0.45;
-
-        if (isOnIce(player)) {
-            max = 0.65;
-        }
-
-        if (player.getWalkSpeed() > 0.2f) max += (player.getWalkSpeed() - 0.2f) * 2.5;
-
-        if (player.hasPotionEffect(org.bukkit.potion.PotionEffectType.SPEED)) {
-            int amplifier = player.getPotionEffect(org.bukkit.potion.PotionEffectType.SPEED).getAmplifier() + 1;
-            max += amplifier * 0.12;
-        }
-
-        if (player.getLocation().getY() > wrapper.getLocation().getY()) {
-            max += 0.15;
-        }
-
-        if (speed > max) {
-            int b = buffer.getOrDefault(uuid, 0) + 1;
-            buffer.put(uuid, b);
-            if (b > 10) {
-                AlertUtil.sendAlert(player, "Speed", b);
-                teleportBack(player);
-                buffer.put(uuid, 0);
-            }
-        } else {
-            buffer.put(uuid, Math.max(0, buffer.getOrDefault(uuid, 0) - 1));
-            if (player.isOnGround()) {
-                lastSafeLocation.put(uuid, player.getLocation());
-            }
+        max = Math.max(max, state.previousSpeed * .91 + .03);
+        max += VelocityProtection.allowance(player);
+        boolean suspicious = speed > max;
+        int threshold = Guardianv3.getInstance().getConfig().getInt("checks.speed.setback-buffer", 3);
+        boolean flag = state.evidence.record(suspicious, speed > max + .4, threshold);
+        if (suspicious || !state.evidence.clean()) SetbackUtil.reject(player);
+        else state.previousSpeed = speed;
+        if (flag) {
+            int buf = state.evidence.buffer();
+            state.evidence.reset();
+            SetbackUtil.flag(player, "Speed", buf);
         }
     }
-
-    private void teleportBack(Player player) {
-        Location safeLoc = lastSafeLocation.get(player.getUniqueId());
-        if (safeLoc != null) {
-            TaskUtil.run(() -> {
-                player.teleport(safeLoc);
-                player.setVelocity(new Vector(0, player.getVelocity().getY(), 0));
-            });
-        }
-    }
-
-    private boolean isOnIce(Player p) {
-        Material m = p.getLocation().clone().subtract(0, 0.1, 0).getBlock().getType();
-        return m.name().contains("ICE");
-    }
+    public void cleanup(UUID uuid) { states.remove(uuid); }
 }

@@ -6,64 +6,50 @@ import com.github.retrooper.packetevents.protocol.packettype.PacketType;
 import com.github.retrooper.packetevents.wrapper.play.client.WrapperPlayClientPlayerFlying;
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityVelocity;
 import org.bukkit.entity.Player;
-import org.mrqendyxz.guardianv3.Utils.AlertUtil;
-
+import org.mrqendyxz.guardianv3.Utils.*;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
-public class VelocityCheck {
-    private final Map<UUID, Double> pendingVelocity = new ConcurrentHashMap<>();
-    private final Map<UUID, Integer> flyingPackets = new ConcurrentHashMap<>();
-    private final Map<UUID, Integer> buffer = new ConcurrentHashMap<>();
-
+public class VelocityCheck implements org.mrqendyxz.guardianv3.Checks.Check {
+    private static final class Pending {
+        double vertical; long due, expires; int samples;
+    }
+    private final Map<UUID, Pending> pending = new ConcurrentHashMap<>();
+    private final Map<UUID, MovementEvidence> evidence = new ConcurrentHashMap<>();
     public void handleSend(PacketSendEvent event) {
-        if (event.getPacketType() == PacketType.Play.Server.ENTITY_VELOCITY) {
-            WrapperPlayServerEntityVelocity wrapper = new WrapperPlayServerEntityVelocity(event);
-            if (event.getPlayer() instanceof Player) {
-                Player p = (Player) event.getPlayer();
-                if (wrapper.getEntityId() == p.getEntityId()) {
-                    double velY = wrapper.getVelocity().y;
-                    if (velY > 0.0) {
-                        pendingVelocity.put(p.getUniqueId(), velY);
-                        flyingPackets.put(p.getUniqueId(), 0);
-                    }
-                }
-            }
-        }
+        if (event.getPacketType() != PacketType.Play.Server.ENTITY_VELOCITY) return;
+        var packet = new WrapperPlayServerEntityVelocity(event);
+        Player p = event.getPlayer();
+        if (p == null) return;
+        if (packet.getEntityId() != p.getEntityId() && packet.getEntityId() != event.getUser().getEntityId()) return;
+        pending.remove(p.getUniqueId());
+        if (packet.getVelocity().y < .08 || p.getPing() > 500) return;
+        Pending state = new Pending(); state.vertical = packet.getVelocity().y;
+        state.due = PacketContext.now() + Math.max(100, p.getPing() + 50L);
+        state.expires = state.due + 600; pending.put(p.getUniqueId(), state);
     }
-
-    public void handleReceive(PacketReceiveEvent event) {
-        if (!WrapperPlayClientPlayerFlying.isFlying(event.getPacketType())) return;
-        Player p = (Player) event.getPlayer();
-        UUID uuid = p.getUniqueId();
-
-        if (!pendingVelocity.containsKey(uuid)) return;
-
-        int packets = flyingPackets.getOrDefault(uuid, 0) + 1;
-        flyingPackets.put(uuid, packets);
-
-        double deltaY = p.getVelocity().getY();
-
-        if (deltaY > 0.001) {
-            pendingVelocity.remove(uuid);
-            flyingPackets.remove(uuid);
-            buffer.put(uuid, Math.max(0, buffer.getOrDefault(uuid, 0) - 1));
-            return;
-        }
-
-        if (packets > 20) {
-            int b = buffer.getOrDefault(uuid, 0) + 1;
-            buffer.put(uuid, b);
-            if (b > 1) {
-                AlertUtil.sendAlert(p, "Velocity (0%)", b);
-                buffer.put(uuid, 0);
-            }
-            pendingVelocity.remove(uuid);
-            flyingPackets.remove(uuid);
-        }
-    }
-
     public void handle(PacketReceiveEvent event) {
+        if (!WrapperPlayClientPlayerFlying.isFlying(event.getPacketType())) return;
+        Player p = event.getPlayer(); UUID id = p.getUniqueId();
+        if (PacketContext.duplicatePosition(p)) return;
+        Pending state = pending.get(id); if (state == null) return;
+        var at = PacketContext.location(p);
+        if (MovementGuards.ordinary(p) || !MovementEnvironment.clear(at.clone().add(0, Math.min(.6, state.vertical), 0), p.getHeight())
+                || MovementGuards.attribute(p, org.bukkit.attribute.Attribute.GENERIC_KNOCKBACK_RESISTANCE, 0) >= .99) { cleanup(id); return; }
+        double requiredVertical = Math.min(.1, state.vertical * .45);
+        if (PacketContext.deltaY(p) >= requiredVertical) { pending.remove(id); evidence.remove(id); return; }
+        if (PacketContext.now() < state.due) return;
+        state.samples++;
+        if (PacketContext.now() < state.expires) return;
+        pending.remove(id);
+        if (state.samples < 5) return;
+        var e = evidence.computeIfAbsent(id, key -> new MovementEvidence());
+        if (e.record(true, false, 2)) {
+            int buf = e.buffer();
+            e.reset();
+            SetbackUtil.flag(p, "Velocity (NoResponse)", buf);
+        }
     }
+    public void cleanup(UUID uuid) { pending.remove(uuid); evidence.remove(uuid); }
 }

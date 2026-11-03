@@ -2,52 +2,39 @@ package org.mrqendyxz.guardianv3.Checks.Movement;
 
 import com.github.retrooper.packetevents.event.PacketReceiveEvent;
 import com.github.retrooper.packetevents.wrapper.play.client.WrapperPlayClientPlayerFlying;
-import org.bukkit.GameMode;
 import org.bukkit.entity.Player;
-import org.mrqendyxz.guardianv3.Utils.AlertUtil;
-
+import org.mrqendyxz.guardianv3.Utils.*;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
-public class StrafeCheck {
-    private final Map<UUID, Float> lastYaw = new ConcurrentHashMap<>();
-    private final Map<UUID, Integer> buffer = new ConcurrentHashMap<>();
-
+public class StrafeCheck implements org.mrqendyxz.guardianv3.Checks.Check {
+    private final Map<UUID, MovementEvidence> evidence = new ConcurrentHashMap<>();
+    private record Motion(double x, double z, int airTicks) {}
+    private final Map<UUID, Motion> previous = new ConcurrentHashMap<>();
     public void handle(PacketReceiveEvent event) {
         if (!WrapperPlayClientPlayerFlying.isFlying(event.getPacketType())) return;
-
-        WrapperPlayClientPlayerFlying wrapper = new WrapperPlayClientPlayerFlying(event);
-        Player player = (Player) event.getPlayer();
-
-        if (player == null || player.getGameMode() == GameMode.CREATIVE) return;
-        if (!wrapper.hasPositionChanged() || !wrapper.hasRotationChanged()) return;
-
-        UUID uuid = player.getUniqueId();
-        double deltaX = wrapper.getLocation().getX() - player.getLocation().getX();
-        double deltaZ = wrapper.getLocation().getZ() - player.getLocation().getZ();
-        double speed = Math.sqrt(deltaX * deltaX + deltaZ * deltaZ);
-
-        float yaw = wrapper.getLocation().getYaw();
-        float last = lastYaw.getOrDefault(uuid, yaw);
-        lastYaw.put(uuid, yaw);
-
-        if (!wrapper.isOnGround() && speed > 0.15) {
-            float diff = Math.abs(yaw - last);
-
-            if (diff > 360) diff %= 360;
-            if (diff > 180) diff = 360 - diff;
-
-            if (diff > 45.0f && diff < 175.0f) {
-                int b = buffer.getOrDefault(uuid, 0) + 1;
-                buffer.put(uuid, b);
-                if (b > 3) {
-                    AlertUtil.sendAlert(player, "Strafe", b);
-                    buffer.put(uuid, 0);
-                }
-            } else {
-                buffer.put(uuid, Math.max(0, buffer.getOrDefault(uuid, 0) - 1));
-            }
+        var packet = new WrapperPlayClientPlayerFlying(event);
+        if (!packet.hasPositionChanged()) return;
+        Player p = event.getPlayer(); UUID id = p.getUniqueId();
+        if (PacketContext.duplicatePosition(p)) return;
+        if (MovementGuards.secondary(p)) { cleanup(id); return; }
+        double x = PacketContext.deltaX(p), z = PacketContext.deltaZ(p);
+        Motion last = previous.get(id);
+        var at = PacketContext.location(p);
+        boolean supported = MovementEnvironment.supported(PacketContext.previous(p), at)
+                || MovementGuards.supportedByPlacement(p, at)
+                || MovementGuards.bridging(p);
+        int air = supported ? 0 : (last == null ? 1 : last.airTicks() + 1);
+        previous.put(id, new Motion(x, z, air));
+        boolean bad = last != null && air > 4 && AirStrafeModel.excessive(x, z, last.x(), last.z(), .1 * MovementGuards.speedMultiplier(p));
+        if (bad) SetbackUtil.reject(p);
+        var e = evidence.computeIfAbsent(id, key -> new MovementEvidence());
+        if (e.record(bad, false, 4)) {
+            int buf = e.buffer();
+            e.reset();
+            SetbackUtil.flag(p, "Strafe", buf);
         }
     }
+    public void cleanup(UUID uuid) { evidence.remove(uuid); previous.remove(uuid); }
 }

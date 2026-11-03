@@ -1,0 +1,26 @@
+Overview: Guardian 1.1.9 eliminates false positives from 1.17-1.21 packet ordering and block edges while closing movement and combat bypasses.
+bStats: Added optional usage metrics with plugin ID 35058. bStats 3.2.1 is bundled and relocated to avoid conflicts; server owners can disable reporting in plugins/bStats/config.yml. No custom charts are sent.
+BadPackets: Added validation of invalid movement coordinates, rotations, player pitch, hotbar slots and self-attacks before movement-state updates. Violations alert and stop processing of the queued copy; this is not a network-level packet filter.
+Duplicate PosRot Fix: Fixed Fly, Speed, Strafe, and Timer false positives when right-clicking items mid-air on 1.17-1.21 clients.
+Post-Flying Rotation: HitBox, WallHit, KillAura, and Scaffold now verify both pre-action and end-of-tick flying rotations for flick shots and fast bridging.
+Eye Height Tolerance: Reach, HitBox, WallHit, and Scaffold check standing, sneaking, and scaled eye heights to prevent sneak-toggle false flags.
+Edge Support: Expanded ground support footprint to 0.3001 so sneaking on extreme block edges never triggers Fly or NoFall.
+Environment Sampling: Slime, beds, ice under carpets/slabs, liquids, climbables, and Boat/Shulker support are sampled across the full player footprint.
+Fly: Closed the fakelag slow-glide bypass (>250ms packet delay) and the initial ledge walk-off hover bypass.
+Speed: Added takeoff, ceiling head-hitter, Soul Speed, Dolphin's Grace, and ice momentum retention allowances.
+AirJump: Fixed bunny-hop false positives, prevented falling ticks from wiping violation buffers, and added mid-air double-jump detection.
+HighJump & Step: Prevented ordinary falling and flat-walking ticks from resetting single-tick jump and step violation buffers.
+WallClimb: Fixed false positives when jumping from the ground next to a wall and respected dynamic player height.
+NoFall: Prevented ground contact from wiping violation buffers and closed the ~2-block interval Packet NoFall bypass.
+NoSlow: Closed the Jump-NoSlow bypass when jumping while consuming items or drawing bows and tuned initial momentum decay.
+Jesus: Added detection for micro-bob / Dolphin surface Jesus cheats while respecting boat and block-edge support.
+LongJump: Preserves violation evidence across landings and catches both takeoff horizontal boosts and late-jump glide speed.
+NoClip: Disarms when blocks or doors are placed directly overlapping a stationary player while preserving evidence across thin walls.
+NoWeb: Added vertical cobweb speed checks and retained violation buffers across single-block cobwebs.
+Velocity: Closed the 1% micro-velocity bypass by requiring vertical response proportional to server knockback.
+BoatFly: Added center-boat support sampling so driving along 1-block-wide ice bridges does not false-flag.
+ElytraFly: Added unboosted horizontal acceleration detection alongside stationary hover checks.
+KillAura: Added MultiAura detection when attacking multiple entities within a single client tick.
+WallHit: Exempted fences, walls, bars, panes, chains, and cobwebs where collision shapes differ from visual raytrace outlines.
+FastBreak: Improved break-speed and latency tolerance on fast-breaking blocks with Efficiency and Haste.
+Freeze & Security: Blocked commands, block edits, drops, and combat while frozen; hardened Discord webhook sanitization and PacketEvents lifecycle.

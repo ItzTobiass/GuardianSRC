@@ -2,117 +2,117 @@ package org.mrqendyxz.guardianv3.Checks.Movement;
 
 import com.github.retrooper.packetevents.event.PacketReceiveEvent;
 import com.github.retrooper.packetevents.wrapper.play.client.WrapperPlayClientPlayerFlying;
-import org.bukkit.GameMode;
-import org.bukkit.Material;
-import org.bukkit.block.Block;
+import org.bukkit.Location;
+import org.bukkit.World;
 import org.bukkit.entity.Player;
-import org.mrqendyxz.guardianv3.Utils.AlertUtil;
-
+import org.bukkit.potion.PotionEffectType;
+import org.mrqendyxz.guardianv3.Utils.*;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
-public class JesusCheck {
-
-    private final Map<UUID, Integer> buffer = new ConcurrentHashMap<>();
-    private final Map<UUID, Double> lastY = new ConcurrentHashMap<>();
-    private final Map<UUID, Long> lastInWater = new ConcurrentHashMap<>();
+public class JesusCheck implements org.mrqendyxz.guardianv3.Checks.Check {
+    private static final class State {
+        final MovementEvidence evidence = new MovementEvidence();
+        int waterTicks;
+        int flatOnTopTicks;
+        int subSurfaceFastTicks;
+    }
+    private final Map<UUID, State> states = new ConcurrentHashMap<>();
 
     public void handle(PacketReceiveEvent event) {
         if (!WrapperPlayClientPlayerFlying.isFlying(event.getPacketType())) return;
-
-        WrapperPlayClientPlayerFlying wrapper = new WrapperPlayClientPlayerFlying(event);
-        if (!wrapper.hasPositionChanged()) return;
-
-        Player player = (Player) event.getPlayer();
-        if (player == null) return;
-        if (player.getGameMode() == GameMode.CREATIVE || player.getGameMode() == GameMode.SPECTATOR) return;
-        if (player.getAllowFlight() || player.isFlying()) return;
-        if (player.getVehicle() != null) return;
-        if (player.hasPotionEffect(org.bukkit.potion.PotionEffectType.WATER_BREATHING)) return;
-
-        UUID uuid = player.getUniqueId();
-        long now = System.currentTimeMillis();
-        double currentY = wrapper.getLocation().getY();
-        double prevY = lastY.getOrDefault(uuid, currentY);
-        lastY.put(uuid, currentY);
-
-        boolean onGround = wrapper.isOnGround();
-        boolean aboveLiquid = isAboveLiquid(player);
-        boolean inLiquid = player.isInWater() || checkWater(player);
-        boolean nearSolid = isNearSolid(player);
-
-        if (inLiquid) {
-            lastInWater.put(uuid, now);
-        }
-
-        if (nearSolid || inLiquid || (now - lastInWater.getOrDefault(uuid, 0L) < 800)) {
-            buffer.put(uuid, Math.max(0, buffer.getOrDefault(uuid, 0) - 1));
+        var packet = new WrapperPlayClientPlayerFlying(event);
+        Player p = event.getPlayer(); UUID id = p.getUniqueId();
+        if (PacketContext.duplicatePosition(p)) return;
+        var at = PacketContext.location(p);
+        var prev = PacketContext.previous(p);
+        if (MovementGuards.mode(p) || p.isSwimming() || !MovementEnvironment.loaded(at)
+                || p.hasPotionEffect(PotionEffectType.LEVITATION)
+                || p.hasPotionEffect(PotionEffectType.SLOW_FALLING)
+                || VelocityProtection.active(p)
+                || MovementGuards.supportedByEntity(p, at)
+                || MovementGuards.nearBubbleColumn(at)) {
+            cleanup(id);
             return;
         }
+        State state = states.computeIfAbsent(id, k -> new State());
+        if (MovementEnvironment.nearGround(prev, at)
+                || touchesSolidNearWater(at)
+                || MovementGuards.supportedByPlacement(p, at)
+                || MovementGuards.bridging(p)) {
+            state.waterTicks = 0;
+            state.flatOnTopTicks = 0;
+            state.subSurfaceFastTicks = 0;
+            state.evidence.record(false, false, 3);
+            return;
+        }
+        boolean liquidBelowOrAtFeet = MovementGuards.touchesLiquidFootprint(at, -.35, .15);
+        boolean headInLiquid = MovementGuards.touchesLiquidFootprint(at, .85, 1.6);
+        if (!liquidBelowOrAtFeet || headInLiquid) {
+            state.waterTicks = 0;
+            state.flatOnTopTicks = 0;
+            state.subSurfaceFastTicks = 0;
+            state.evidence.record(false, false, 3);
+            return;
+        }
+        state.waterTicks++;
+        if (state.waterTicks <= 5) return;
 
-        if (aboveLiquid && onGround) {
-            int b = buffer.getOrDefault(uuid, 0) + 2;
-            buffer.put(uuid, b);
+        double dy = PacketContext.deltaY(p);
+        double horizontal = Math.hypot(PacketContext.deltaX(p), PacketContext.deltaZ(p));
+        double mult = MovementGuards.speedMultiplier(p);
+        int ds = MovementGuards.depthStrider(p);
+        double groundSpeedLimit = (.235 + ds * .05) * mult;
 
-            if (b >= 5) {
-                AlertUtil.sendAlert(player, "Jesus", b);
-                buffer.put(uuid, 0);
+        boolean feetAboveLiquid = !MovementGuards.touchesLiquidFootprint(at, .08, .5);
+        if (feetAboveLiquid && Math.abs(dy) < .003 && horizontal > .05) {
+            state.flatOnTopTicks++;
+        } else {
+            state.flatOnTopTicks = 0;
+        }
+
+        if (Math.abs(dy) < .005 && horizontal > groundSpeedLimit) {
+            state.subSurfaceFastTicks++;
+        } else {
+            state.subSurfaceFastTicks = 0;
+        }
+
+        boolean spoofedGround = packet.isOnGround() && feetAboveLiquid && Math.abs(dy) < .02;
+        boolean bad = spoofedGround || state.flatOnTopTicks >= 5 || state.subSurfaceFastTicks >= 4;
+
+        if (bad) {
+            SetbackUtil.reject(p);
+            if (state.evidence.record(true, false, 3)) {
+                int buf = state.evidence.buffer();
+                state.evidence.reset();
+                state.flatOnTopTicks = 0;
+                state.subSurfaceFastTicks = 0;
+                SetbackUtil.flag(p, "Jesus", buf);
             }
-            return;
+        } else if (Math.abs(dy) >= .015) {
+            state.evidence.record(false, false, 3);
         }
+    }
 
-        if (aboveLiquid && !onGround) {
-            double deltaY = currentY - prevY;
-            boolean validJump = deltaY > 0.05 && deltaY < 0.6;
-
-            if (!validJump) {
-                int b = buffer.getOrDefault(uuid, 0) + 1;
-                buffer.put(uuid, b);
-
-                if (b >= 5) {
-                    AlertUtil.sendAlert(player, "Jesus", b);
-                    buffer.put(uuid, 0);
+    private boolean touchesSolidNearWater(Location at) {
+        World world = at.getWorld();
+        if (world == null) return false;
+        int minX = (int) Math.floor(at.getX() - .45), maxX = (int) Math.floor(at.getX() + .45);
+        int minZ = (int) Math.floor(at.getZ() - .45), maxZ = (int) Math.floor(at.getZ() + .45);
+        int minY = (int) Math.floor(at.getY() - .55), maxY = (int) Math.floor(at.getY() + .35);
+        for (int x = minX; x <= maxX; x++) {
+            for (int z = minZ; z <= maxZ; z++) {
+                for (int y = minY; y <= maxY; y++) {
+                    var m = WorldCache.type(world, x, y, z);
+                    if (!m.isAir() && m != org.bukkit.Material.WATER && m != org.bukkit.Material.LAVA) {
+                        return true;
+                    }
                 }
-            } else {
-                buffer.put(uuid, Math.max(0, buffer.getOrDefault(uuid, 0) - 1));
             }
-            return;
-        }
-
-        buffer.put(uuid, Math.max(0, buffer.getOrDefault(uuid, 0) - 1));
-    }
-
-    private boolean checkWater(Player player) {
-        Material m = player.getLocation().getBlock().getType();
-        Material mDown = player.getLocation().clone().subtract(0, 0.5, 0).getBlock().getType();
-        return m == Material.WATER || m == Material.LAVA || mDown == Material.WATER || mDown == Material.LAVA;
-    }
-
-    private boolean isAboveLiquid(Player player) {
-        for (double dy = 0.1; dy <= 1.2; dy += 0.1) {
-            Block b = player.getLocation().clone().subtract(0, dy, 0).getBlock();
-            if (b.getType() == Material.WATER || b.getType() == Material.LAVA) return true;
-            if (b.getType().isSolid()) return false;
         }
         return false;
     }
 
-    private boolean isNearSolid(Player player) {
-        for (int x = -1; x <= 1; x++) {
-            for (int z = -1; z <= 1; z++) {
-                for (double dy = 0; dy <= 0.7; dy += 0.35) {
-                    Block b = player.getLocation().clone().add(x, -dy, z).getBlock();
-                    if (b.getType().isSolid()) return true;
-                }
-            }
-        }
-        return false;
-    }
-
-    public void cleanup(UUID uuid) {
-        buffer.remove(uuid);
-        lastY.remove(uuid);
-        lastInWater.remove(uuid);
-    }
+    public void cleanup(UUID uuid) { states.remove(uuid); }
 }

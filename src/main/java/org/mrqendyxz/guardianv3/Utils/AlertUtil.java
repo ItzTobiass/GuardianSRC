@@ -16,26 +16,34 @@ import java.util.concurrent.ConcurrentHashMap;
 
 public class AlertUtil {
 
-    private static final Map<UUID, Integer> totalViolations = new ConcurrentHashMap<>();
-    private static final Map<UUID, Long> lastAlert = new ConcurrentHashMap<>();
+    private static final java.util.concurrent.Semaphore webhookSlots = new java.util.concurrent.Semaphore(4);
+    private static final ViolationLedger violationsByCheck = new ViolationLedger();
+    private static final Map<UUID, Map<String, Long>> lastAlert = new ConcurrentHashMap<>();
 
     public static void sendAlert(Player player, String checkName, int buffer) {
+        TaskUtil.run(() -> sendAlertSync(player, checkName, buffer));
+    }
+
+    private static void sendAlertSync(Player player, String checkName, int buffer) {
+        if (!player.isOnline()) return;
         if (player.isOp() || player.hasPermission("guardian.bypass")) return;
 
         UUID uuid = player.getUniqueId();
-        long now = System.currentTimeMillis();
-        if (now - lastAlert.getOrDefault(uuid, 0L) < 100) return;
-        lastAlert.put(uuid, now);
+        long now = System.nanoTime() / 1_000_000L;
+        Map<String, Long> alerts = lastAlert.computeIfAbsent(uuid, id -> new ConcurrentHashMap<>());
+        if (now - alerts.getOrDefault(checkName, Long.MIN_VALUE / 2) < 100) return;
+        alerts.put(checkName, now);
 
         Guardianv3 plugin = Guardianv3.getInstance();
         FileConfiguration config = plugin.getConfig();
 
-        int violations = totalViolations.getOrDefault(uuid, 0) + 1;
-        totalViolations.put(uuid, violations);
+        long decayMillis = ConfigDurations.seconds(config.getLong("punishments.decay-seconds", 30)) * 1000L;
+        int violations = violationsByCheck.increment(uuid, checkName, now, decayMillis);
 
-        String safeCheck = checkName.replaceAll("[^a-zA-Z0-9 _-]", "");
+        String safeCheck = checkName.replaceAll("[^a-zA-Z0-9 ()_-]", "");
+        String safePlayer = player.getName().replaceAll("[^a-zA-Z0-9_.-]", "");
         String brandDisplay = ClientBrandListener.getFormattedBrand(uuid);
-        String cleanBrand = ChatColor.stripColor(brandDisplay).replaceAll("[^a-zA-Z0-9 _-]", "");
+        String cleanBrand = ChatColor.stripColor(brandDisplay).replaceAll("[^a-zA-Z0-9 ()_-]", "");
 
         String alertFormat = config.getString("alert-message", "§c§lGuardian §8» §f%player% §7failed §f%check% §8(§7x%buffer%§8) §8[§7Client: %brand%§8]");
         String alertMessage = alertFormat
@@ -57,23 +65,31 @@ public class AlertUtil {
         if (config.getBoolean("webhook.enabled", false)) {
             String url = config.getString("webhook.url", "none");
             if (!url.equalsIgnoreCase("none") && !url.isEmpty()) {
-                sendDiscordWebhook(url, player.getName(), safeCheck, buffer, cleanBrand, violations);
+                sendDiscordWebhook(url, safePlayer, safeCheck, buffer, cleanBrand, violations);
             }
         }
 
-        String punishmentType = config.getString("punishments.type", "NONE").toUpperCase();
+        String punishmentType = config.getString("punishments.type", "NONE").trim().toUpperCase(java.util.Locale.ROOT);
         if (punishmentType.equals("NONE")) return;
 
-        int threshold = config.getInt("punishments.threshold", 20);
+        int threshold = Math.max(1, config.getInt("punishments.threshold", 20));
         if (violations >= threshold) {
-            totalViolations.put(uuid, 0);
+            violationsByCheck.cleanup(uuid);
             executePunishment(plugin, config, player, safeCheck, punishmentType);
         }
     }
 
     private static void executePunishment(Guardianv3 plugin, FileConfiguration config, Player player, String checkName, String type) {
         TaskUtil.run(() -> {
-            String path = type.equals("BAN") ? "punishments.ban-message" : "punishments.kick-message";
+            String path;
+            switch (type) {
+                case "BAN": path = "punishments.ban-message"; break;
+                case "KICK": path = "punishments.kick-message"; break;
+                case "NONE": return;
+                default:
+                    plugin.getLogger().warning("Invalid punishments.type: " + type + "; no punishment executed.");
+                    return;
+            }
             String rawMsg = config.getString(path, "§cFlagged for %check%");
             String finalMsg = ChatColor.translateAlternateColorCodes('&', rawMsg)
                     .replace("%check%", checkName)
@@ -86,11 +102,16 @@ public class AlertUtil {
         });
     }
 
-    private static void sendDiscordWebhook(String webhookUrl, String playerName, String check, int buffer, String brand, int totalVl) {
+    private static void sendDiscordWebhook(String webhookUrl, String playerName, String check, int buffer, String brand, int checkVl) {
+        if (!webhookSlots.tryAcquire()) return;
+        try {
         Bukkit.getScheduler().runTaskAsynchronously(Guardianv3.getInstance(), () -> {
+            HttpURLConnection conn = null;
             try {
                 URL url = new URL(webhookUrl);
-                HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                conn = (HttpURLConnection) url.openConnection();
+                conn.setConnectTimeout(5000);
+                conn.setReadTimeout(5000);
                 conn.setRequestMethod("POST");
                 conn.setRequestProperty("Content-Type", "application/json");
                 conn.setDoOutput(true);
@@ -100,15 +121,21 @@ public class AlertUtil {
                         + "{\"name\":\"Check\",\"value\":\"`" + check + "`\",\"inline\":true},"
                         + "{\"name\":\"Buffer\",\"value\":\"`" + buffer + "`\",\"inline\":true},"
                         + "{\"name\":\"Client\",\"value\":\"`" + brand + "`\",\"inline\":true},"
-                        + "{\"name\":\"Total VL\",\"value\":\"`" + totalVl + "`\",\"inline\":true}"
+                        + "{\"name\":\"Check VL\",\"value\":\"`" + checkVl + "`\",\"inline\":true}"
                         + "],\"footer\":{\"text\":\"Guardian Anticheat\"},\"timestamp\":\"" + java.time.OffsetDateTime.now() + "\"}]}";
 
                 try (OutputStream os = conn.getOutputStream()) {
                     os.write(json.getBytes(StandardCharsets.UTF_8));
                 }
                 conn.getResponseCode();
-                conn.disconnect();
-            } catch (Exception ignored) {}
+            } catch (Exception ignored) {
+            } finally {
+                if (conn != null) conn.disconnect();
+                webhookSlots.release();
+            }
         });
+        } catch (RuntimeException ex) { webhookSlots.release(); throw ex; }
     }
+    public static void cleanup(UUID id) { violationsByCheck.cleanup(id); lastAlert.remove(id); }
+    public static void clear() { violationsByCheck.clear(); lastAlert.clear(); }
 }

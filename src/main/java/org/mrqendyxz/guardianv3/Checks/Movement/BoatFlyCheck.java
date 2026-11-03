@@ -1,130 +1,167 @@
 package org.mrqendyxz.guardianv3.Checks.Movement;
 
 import com.github.retrooper.packetevents.event.PacketReceiveEvent;
-import com.github.retrooper.packetevents.wrapper.play.client.WrapperPlayClientPlayerFlying;
-import org.bukkit.GameMode;
+import com.github.retrooper.packetevents.protocol.packettype.PacketType;
+import com.github.retrooper.packetevents.wrapper.play.client.WrapperPlayClientVehicleMove;
+import org.bukkit.Location;
 import org.bukkit.Material;
-import org.bukkit.entity.Boat;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Player;
-import org.mrqendyxz.guardianv3.Utils.AlertUtil;
-
+import org.mrqendyxz.guardianv3.Utils.*;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
-public class BoatFlyCheck {
-
-    private final Map<UUID, Double> lastX = new ConcurrentHashMap<>();
-    private final Map<UUID, Double> lastY = new ConcurrentHashMap<>();
-    private final Map<UUID, Double> lastZ = new ConcurrentHashMap<>();
-    private final Map<UUID, Integer> bufferHover = new ConcurrentHashMap<>();
-    private final Map<UUID, Integer> bufferSpeed = new ConcurrentHashMap<>();
-    private final Map<UUID, Integer> airTicks = new ConcurrentHashMap<>();
-
-    private static final double MAX_HORIZONTAL_SPEED = 0.9;
-    private static final double MAX_DELTA_Y = 0.12;
+public class BoatFlyCheck implements org.mrqendyxz.guardianv3.Checks.Check {
+    private static final class State {
+        UUID vehicle;
+        double x, y, z, expected, prevHorizontal;
+        boolean sampled;
+        long grace;
+        long iceGrace;
+        final MovementEvidence flyEvidence = new MovementEvidence();
+        final MovementEvidence speedEvidence = new MovementEvidence();
+        final MovementEvidence clipEvidence = new MovementEvidence();
+    }
+    private final Map<UUID, State> states = new ConcurrentHashMap<>();
 
     public void handle(PacketReceiveEvent event) {
-        if (!WrapperPlayClientPlayerFlying.isFlying(event.getPacketType())) return;
-
-        WrapperPlayClientPlayerFlying wrapper = new WrapperPlayClientPlayerFlying(event);
-        Player player = (Player) event.getPlayer();
-        if (player == null) return;
-        if (player.getGameMode() == GameMode.CREATIVE || player.getGameMode() == GameMode.SPECTATOR) return;
-
-        Entity vehicle = player.getVehicle();
-        if (!(vehicle instanceof Boat)) {
-            bufferHover.put(player.getUniqueId(), 0);
-            bufferSpeed.put(player.getUniqueId(), 0);
-            airTicks.put(player.getUniqueId(), 0);
+        if (event.getPacketType() != PacketType.Play.Client.VEHICLE_MOVE) return;
+        Player p = event.getPlayer();
+        UUID id = p.getUniqueId();
+        Entity vehicle = p.getVehicle();
+        if (vehicle == null || vehicle.getPassengers().isEmpty() || vehicle.getPassengers().getFirst() != p) {
+            cleanup(id);
             return;
         }
-
-        if (!wrapper.hasPositionChanged()) return;
-
-        UUID uuid = player.getUniqueId();
-        double currentX = wrapper.getLocation().getX();
-        double currentY = wrapper.getLocation().getY();
-        double currentZ = wrapper.getLocation().getZ();
-
-        double prevX = lastX.getOrDefault(uuid, currentX);
-        double prevY = lastY.getOrDefault(uuid, currentY);
-        double prevZ = lastZ.getOrDefault(uuid, currentZ);
-
-        double deltaX = currentX - prevX;
-        double deltaY = currentY - prevY;
-        double deltaZ = currentZ - prevZ;
-        double horizontalSpeed = Math.sqrt(deltaX * deltaX + deltaZ * deltaZ);
-
-        lastX.put(uuid, currentX);
-        lastY.put(uuid, currentY);
-        lastZ.put(uuid, currentZ);
-
-        boolean onGround = wrapper.isOnGround();
-        boolean aboveGround = isAboveGround(player);
-        boolean inLiquid = player.getLocation().getBlock().isLiquid()
-                || player.getLocation().clone().subtract(0, 0.1, 0).getBlock().isLiquid();
-
-        if (onGround || inLiquid) {
-            airTicks.put(uuid, 0);
-            bufferHover.put(uuid, Math.max(0, bufferHover.getOrDefault(uuid, 0) - 2));
-            bufferSpeed.put(uuid, Math.max(0, bufferSpeed.getOrDefault(uuid, 0) - 2));
+        SetbackUtil.begin(p);
+        var pos = new WrapperPlayClientVehicleMove(event).getPosition();
+        if (!Double.isFinite(pos.x) || !Double.isFinite(pos.y) || !Double.isFinite(pos.z)
+                || Math.abs(pos.x) > 30_000_000 || Math.abs(pos.y) > 30_000_000 || Math.abs(pos.z) > 30_000_000) {
+            cleanup(id);
+            SetbackUtil.flag(p, "BoatFly", 1);
             return;
         }
+        Location at = new Location(p.getWorld(), pos.x, pos.y, pos.z);
+        if (!MovementEnvironment.loaded(at)) {
+            cleanup(id);
+            return;
+        }
+        State state = states.computeIfAbsent(id, key -> new State());
+        if (!vehicle.getUniqueId().equals(state.vehicle)) {
+            state = new State();
+            state.vehicle = vehicle.getUniqueId();
+            states.put(id, state);
+        }
+        Location prev = state.sampled ? new Location(p.getWorld(), state.x, state.y, state.z) : at;
+        double dx = state.sampled ? pos.x - state.x : 0;
+        double dy = state.sampled ? pos.y - state.y : 0;
+        double dz = state.sampled ? pos.z - state.z : 0;
+        double horizontal = Math.hypot(dx, dz);
+        boolean first = !state.sampled;
+        state.sampled = true;
+        state.x = pos.x;
+        state.y = pos.y;
+        state.z = pos.z;
 
-        int ticks = airTicks.getOrDefault(uuid, 0) + 1;
-        airTicks.put(uuid, ticks);
-
-        if (ticks < 4) return;
-
-        if (aboveGround && Math.abs(deltaY) < 0.005 && horizontalSpeed > 0.05) {
-            int b = bufferHover.getOrDefault(uuid, 0) + 1;
-            bufferHover.put(uuid, b);
-            if (b > 8) {
-                AlertUtil.sendAlert(player, "BoatFly (Hover)", b);
-                bufferHover.put(uuid, 0);
+        long now = PacketContext.now();
+        boolean contact = false;
+        boolean hasIce = false;
+        double[] offsets = {-.6, 0.0, .6};
+        for (double ox : offsets) {
+            for (double oz : offsets) {
+                Location edge = at.clone().add(ox, 0, oz);
+                if (!MovementEnvironment.loaded(edge)) {
+                    cleanup(id);
+                    return;
+                }
+                Location below = edge.clone().subtract(0, .35, 0);
+                Material edgeType = WorldCache.type(edge);
+                Material belowType = WorldCache.type(below);
+                if (edgeType.name().contains("ICE") || belowType.name().contains("ICE")) {
+                    hasIce = true;
+                    state.iceGrace = now + 1200;
+                }
+                if (WorldCache.liquid(edge) || WorldCache.liquid(below)
+                        || edgeType == Material.BUBBLE_COLUMN || belowType == Material.BUBBLE_COLUMN
+                        || belowType == Material.SLIME_BLOCK || belowType == Material.MOVING_PISTON) {
+                    contact = true;
+                    if (edgeType == Material.BUBBLE_COLUMN || belowType == Material.BUBBLE_COLUMN
+                            || belowType == Material.SLIME_BLOCK || belowType == Material.MOVING_PISTON) {
+                        state.grace = now + 1500;
+                    }
+                }
+                if (MovementEnvironment.supported(edge)) contact = true;
             }
-        } else {
-            bufferHover.put(uuid, Math.max(0, bufferHover.getOrDefault(uuid, 0) - 1));
         }
 
-        if (aboveGround && horizontalSpeed > MAX_HORIZONTAL_SPEED) {
-            int b = bufferSpeed.getOrDefault(uuid, 0) + 1;
-            bufferSpeed.put(uuid, b);
-            if (b > 5) {
-                AlertUtil.sendAlert(player, "BoatFly (Speed)", b);
-                bufferSpeed.put(uuid, 0);
+        if (!first) {
+            boolean blocked = MovementEnvironment.solidBlocked(prev, at, .24, .45, 1.45);
+            if (blocked) {
+                SetbackUtil.reject(p);
+                if (state.clipEvidence.record(true, horizontal > .35 || !MovementEnvironment.solidBlocked(null, prev, .24, .45, 1.45), 2)) {
+                    int buf = state.clipEvidence.buffer();
+                    state.clipEvidence.reset();
+                    state.sampled = false;
+                    SetbackUtil.flag(p, "NoClip", buf);
+                    return;
+                }
+            } else {
+                state.clipEvidence.record(false, false, 2);
             }
-        } else {
-            bufferSpeed.put(uuid, Math.max(0, bufferSpeed.getOrDefault(uuid, 0) - 1));
+
+            boolean iceActive = hasIce || now < state.iceGrace;
+            double kb = VelocityProtection.allowance(p);
+            double maxSpeed = (iceActive ? Math.min(2.1, Math.max(.85, state.prevHorizontal + .28))
+                    : Math.max(.60, state.prevHorizontal * .92 + .04)) + kb;
+            boolean badSpeed = horizontal > maxSpeed;
+            if (badSpeed) SetbackUtil.reject(p);
+            else state.prevHorizontal = horizontal;
+            if (state.speedEvidence.record(badSpeed, horizontal > maxSpeed + .35, 2)) {
+                int buf = state.speedEvidence.buffer();
+                state.speedEvidence.reset();
+                state.sampled = false;
+                SetbackUtil.flag(p, "Speed", buf);
+                return;
+            }
         }
 
-        if (deltaY > MAX_DELTA_Y) {
-            int b = bufferHover.getOrDefault(uuid, 0) + 1;
-            bufferHover.put(uuid, b);
-            if (b > 5) {
-                AlertUtil.sendAlert(player, "BoatFly (Upwards)", b);
-                bufferHover.put(uuid, 0);
-            }
+        if (first || now < state.grace) {
+            state.expected = dy;
+            state.flyEvidence.reset();
+            return;
         }
+        if (contact) {
+            boolean badUpward = dy > .26 + VelocityProtection.verticalAllowance(p);
+            if (badUpward) {
+                SetbackUtil.reject(p);
+                if (state.flyEvidence.record(true, dy > .55, 2)) {
+                    int buf = state.flyEvidence.buffer();
+                    state.flyEvidence.reset();
+                    state.sampled = false;
+                    SetbackUtil.flag(p, "BoatFly", buf);
+                }
+            } else {
+                state.expected = dy;
+                state.flyEvidence.record(false, false, 3);
+                if (state.speedEvidence.clean() && state.clipEvidence.clean()) {
+                    SetbackUtil.acceptVehicle(p, at);
+                }
+            }
+            return;
+        }
+        state.expected = (state.expected - .04) * .95;
+        boolean badFly = dy - state.expected > .08;
+        if (badFly) SetbackUtil.reject(p);
+        if (state.flyEvidence.record(badFly, dy > .35, 3)) {
+            int buf = state.flyEvidence.buffer();
+            state.flyEvidence.reset();
+            state.sampled = false;
+            SetbackUtil.flag(p, "BoatFly", buf);
+            return;
+        }
+        state.expected = Math.min(dy, state.expected);
     }
 
-    private boolean isAboveGround(Player player) {
-        for (double dy = 0.1; dy <= 3.0; dy += 0.2) {
-            Material m = player.getLocation().clone().subtract(0, dy, 0).getBlock().getType();
-            if (m == Material.WATER || m == Material.LAVA) return false;
-            if (m.isSolid()) return true;
-        }
-        return false;
-    }
-
-    public void cleanup(UUID uuid) {
-        lastX.remove(uuid);
-        lastY.remove(uuid);
-        lastZ.remove(uuid);
-        bufferHover.remove(uuid);
-        bufferSpeed.remove(uuid);
-        airTicks.remove(uuid);
-    }
+    public void cleanup(UUID uuid) { states.remove(uuid); }
 }

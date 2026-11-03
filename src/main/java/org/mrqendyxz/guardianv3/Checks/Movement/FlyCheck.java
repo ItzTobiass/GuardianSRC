@@ -4,215 +4,85 @@ import com.github.retrooper.packetevents.event.PacketReceiveEvent;
 import com.github.retrooper.packetevents.wrapper.play.client.WrapperPlayClientPlayerFlying;
 import org.bukkit.GameMode;
 import org.bukkit.Location;
-import org.bukkit.Material;
 import org.bukkit.entity.Player;
-import org.bukkit.util.Vector;
-import org.mrqendyxz.guardianv3.Utils.AlertUtil;
-import org.mrqendyxz.guardianv3.Utils.TaskUtil;
-
+import org.bukkit.potion.PotionEffectType;
+import org.mrqendyxz.guardianv3.Guardianv3;
+import org.mrqendyxz.guardianv3.Utils.*;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
-public class FlyCheck {
-
-    private final Map<UUID, Double>  lastY               = new ConcurrentHashMap<>();
-    private final Map<UUID, Double>  predictedVelocityY  = new ConcurrentHashMap<>();
-    private final Map<UUID, Integer> bufferA             = new ConcurrentHashMap<>();
-    private final Map<UUID, Integer> bufferB             = new ConcurrentHashMap<>();
-    private final Map<UUID, Integer> bufferStuck         = new ConcurrentHashMap<>();
-    private final Map<UUID, Long>    lastMove            = new ConcurrentHashMap<>();
-    private final Map<UUID, Location>lastSafeLocation    = new ConcurrentHashMap<>();
-    private final Map<UUID, Integer> airTicks            = new ConcurrentHashMap<>();
-    private final Map<UUID, Integer> velocityGraceTicks  = new ConcurrentHashMap<>();
-    private final Map<UUID, Integer> elytraGraceTicks    = new ConcurrentHashMap<>();
-    private final Map<UUID, Boolean> wasGliding          = new ConcurrentHashMap<>();
-
-    private static final double GRAVITY        = 0.08;
-    private static final double DRAG           = 0.98;
-    private static final int    VELOCITY_GRACE = 12;
-    private static final int    ELYTRA_GRACE   = 20;
-
-    public void notifyVelocity(UUID uuid) {
-        velocityGraceTicks.put(uuid, VELOCITY_GRACE);
-        predictedVelocityY.remove(uuid);
+public class FlyCheck implements org.mrqendyxz.guardianv3.Checks.Check {
+    private static final class State {
+        final FlightModel model = new FlightModel();
+        long glideUntil;
+        int stationaryAirPackets;
     }
+    private final Map<UUID, State> states = new ConcurrentHashMap<>();
 
     public void handle(PacketReceiveEvent event) {
         if (!WrapperPlayClientPlayerFlying.isFlying(event.getPacketType())) return;
-
-        WrapperPlayClientPlayerFlying wrapper = new WrapperPlayClientPlayerFlying(event);
-        Player player = (Player) event.getPlayer();
-        if (player == null) return;
-
-        UUID uuid       = player.getUniqueId();
-        long now        = System.currentTimeMillis();
-        boolean gliding = player.isGliding();
-
-        if (wasGliding.getOrDefault(uuid, false) && !gliding) {
-            elytraGraceTicks.put(uuid, ELYTRA_GRACE);
-            predictedVelocityY.remove(uuid);
-        }
-        wasGliding.put(uuid, gliding);
-
-        int elytraGrace = elytraGraceTicks.getOrDefault(uuid, 0);
-        if (elytraGrace > 0) {
-            elytraGraceTicks.put(uuid, elytraGrace - 1);
-            lastY.put(uuid, wrapper.getLocation().getY());
-            predictedVelocityY.remove(uuid);
-            bufferA.put(uuid, Math.max(0, bufferA.getOrDefault(uuid, 0) - 1));
+        var packet = new WrapperPlayClientPlayerFlying(event);
+        Player player = event.getPlayer();
+        if (PacketContext.duplicatePosition(player)) return;
+        State state = states.computeIfAbsent(player.getUniqueId(), id -> new State());
+        long now = PacketContext.now();
+        Location at = PacketContext.location(player);
+        Location prev = PacketContext.previous(player);
+        if (player.isGliding()) state.glideUntil = now + 500;
+        if (MovementGuards.ordinary(player) || player.getGameMode() == GameMode.CREATIVE || player.getGameMode() == GameMode.SPECTATOR
+                || player.getAllowFlight() || player.isFlying() || player.isInsideVehicle()
+                || player.isGliding() || player.isRiptiding() || now < state.glideUntil
+                || player.hasPotionEffect(PotionEffectType.LEVITATION)
+                || player.hasPotionEffect(PotionEffectType.SLOW_FALLING)
+                || special(at, player.getHeight()) || !MovementEnvironment.loaded(at)) {
+            state.model.reset();
+            state.stationaryAirPackets = 0;
+            SetbackUtil.reject(player);
             return;
         }
-
-        if (player.getGameMode() == GameMode.CREATIVE || player.getGameMode() == GameMode.SPECTATOR
-                || player.getAllowFlight() || player.isFlying()
-                || player.getVehicle() != null || gliding
-                || player.getLocation().getBlock().isLiquid()
-                || isNearGround(player) || isClimbable(player)) {
-
-            if (player.isOnGround()) {
-                lastSafeLocation.put(uuid, player.getLocation());
+        double dy = PacketContext.deltaY(player);
+        double jump = MovementGuards.jump(player);
+        double impulse = VelocityProtection.verticalAllowance(player);
+        boolean velocityActive = VelocityProtection.active(player);
+        boolean supported = MovementEnvironment.supported(prev, at)
+                || MovementGuards.supportedByPlacement(player, at)
+                || MovementGuards.supportedByEntity(player, at)
+                || (MovementGuards.bridging(player) && dy <= jump + .08)
+                || (packet.isOnGround() && MovementEnvironment.nearGround(prev, at));
+        boolean takeoffFromGround = !supported && dy > 0 && dy <= jump + .06
+                && (PacketContext.wasSupported(player) || MovementEnvironment.supported(prev) || MovementGuards.supportedByEntity(player, prev));
+        if (!packet.hasPositionChanged()) {
+            if (supported || velocityActive) {
+                state.stationaryAirPackets = 0;
+                state.model.record(0, true, 0, jump, impulse, now, 3);
+                return;
             }
-
-            lastY.put(uuid, wrapper.getLocation().getY());
-            predictedVelocityY.remove(uuid);
-            bufferA.put(uuid, 0);
-            bufferB.put(uuid, 0);
-            bufferStuck.put(uuid, 0);
-            airTicks.put(uuid, 0);
-            lastMove.put(uuid, now);
-            return;
-        }
-
-        if (player.getNoDamageTicks() > 0 && player.getNoDamageTicks() < 15) {
-            lastY.put(uuid, wrapper.getLocation().getY());
-            predictedVelocityY.remove(uuid);
-            return;
-        }
-
-        if (!wrapper.hasPositionChanged()) {
-            if (!wrapper.isOnGround()) {
-                long last = lastMove.getOrDefault(uuid, now);
-                if (now - last > 800L) {
-                    int b = bufferStuck.getOrDefault(uuid, 0) + 1;
-                    bufferStuck.put(uuid, b);
-                    if (b > 5) {
-                        AlertUtil.sendAlert(player, "Fly (AirStuck)", b);
-                        teleportBack(player);
-                        lastMove.put(uuid, now);
-                    }
-                }
-            }
-            return;
-        }
-
-        lastMove.put(uuid, now);
-        bufferStuck.put(uuid, 0);
-
-        double currentY = wrapper.getLocation().getY();
-        double prevY    = lastY.getOrDefault(uuid, currentY);
-        double deltaY   = currentY - prevY;
-        lastY.put(uuid, currentY);
-
-        boolean onGround = wrapper.isOnGround();
-
-        if (onGround) {
-            predictedVelocityY.remove(uuid);
-            airTicks.put(uuid, 0);
-            velocityGraceTicks.put(uuid, 0);
-            elytraGraceTicks.put(uuid, 0);
-            bufferA.put(uuid, Math.max(0, bufferA.getOrDefault(uuid, 0) - 2));
-            bufferB.put(uuid, Math.max(0, bufferB.getOrDefault(uuid, 0) - 2));
-            lastSafeLocation.put(uuid, player.getLocation());
-            return;
-        }
-
-        int ticks = airTicks.getOrDefault(uuid, 0) + 1;
-        airTicks.put(uuid, ticks);
-
-        int grace = velocityGraceTicks.getOrDefault(uuid, 0);
-        if (grace > 0) {
-            velocityGraceTicks.put(uuid, grace - 1);
-            predictedVelocityY.put(uuid, deltaY);
-            lastY.put(uuid, currentY);
-            bufferA.put(uuid, Math.max(0, bufferA.getOrDefault(uuid, 0) - 1));
-            return;
-        }
-
-        if (deltaY > 0.5 && ticks <= 3) {
-            velocityGraceTicks.put(uuid, VELOCITY_GRACE);
-            predictedVelocityY.put(uuid, deltaY);
-            return;
-        }
-
-        double predictedVY    = predictedVelocityY.getOrDefault(uuid, deltaY);
-        double expectedDeltaY = (predictedVY - GRAVITY) * DRAG;
-        predictedVelocityY.put(uuid, expectedDeltaY);
-
-        double diff = deltaY - expectedDeltaY;
-        if (ticks > 3 && diff > 0.08) {
-            int b = bufferA.getOrDefault(uuid, 0) + 1;
-            bufferA.put(uuid, b);
-            if (b > 8) {
-                AlertUtil.sendAlert(player, "Fly (Type: A)", b);
-                teleportBack(player);
-                bufferA.put(uuid, 0);
-            }
+            if (++state.stationaryAirPackets <= 2) return;
         } else {
-            bufferA.put(uuid, Math.max(0, bufferA.getOrDefault(uuid, 0) - 1));
+            state.stationaryAirPackets = 0;
         }
-
-        if (ticks > 5 && Math.abs(deltaY) < 0.005) {
-            int b = bufferB.getOrDefault(uuid, 0) + 1;
-            bufferB.put(uuid, b);
-            if (b > 6) {
-                AlertUtil.sendAlert(player, "Fly (Type: B)", b);
-                teleportBack(player);
-                bufferB.put(uuid, 0);
-            }
-        } else {
-            bufferB.put(uuid, Math.max(0, bufferB.getOrDefault(uuid, 0) - 1));
+        if (takeoffFromGround) {
+            state.model.record(0, true, 0, jump, impulse, now, 3);
         }
-    }
-
-    private void teleportBack(Player player) {
-        Location loc = lastSafeLocation.get(player.getUniqueId());
-        if (loc != null) {
-            TaskUtil.run(() -> {
-                player.teleport(loc);
-                player.setVelocity(new Vector(0, -0.1, 0));
-            });
+        if (velocityActive && dy <= jump + impulse + .15) {
+            state.model.record(Math.min(0, dy), true, 0, jump, impulse + jump, now, 3);
+            SetbackUtil.reject(player);
+            return;
+        }
+        if (!supported) SetbackUtil.reject(player);
+        double bounceFactor = (supported && !player.isSneaking()) ? MovementGuards.footprintBounceFactor(at) : 0;
+        int threshold = Math.max(3, Guardianv3.getInstance().getConfig().getInt("checks.fly.setback-buffer", 4));
+        boolean flag = state.model.record(dy, supported, bounceFactor, jump, impulse, now, threshold);
+        if (!state.model.clean()) SetbackUtil.reject(player);
+        if (flag) {
+            int buf = state.model.buffer();
+            state.model.reset();
+            SetbackUtil.flag(player, "Fly", buf);
         }
     }
-
-    private boolean isClimbable(Player p) {
-        Material m    = p.getLocation().getBlock().getType();
-        String   name = m.name();
-        return name.contains("VINE") || name.contains("LADDER") || name.contains("SCAFFOLDING")
-                || name.contains("TWISTING_VINES") || name.contains("WEEPING_VINES");
+    private boolean special(Location at, double height) {
+        return MovementGuards.touchesSpecialBlock(at, height);
     }
-
-    private boolean isNearGround(Player p) {
-        for (double x = -0.4; x <= 0.4; x += 0.2) {
-            for (double z = -0.4; z <= 0.4; z += 0.2) {
-                if (p.getLocation().add(x, -0.3, z).getBlock().getType().isSolid()) return true;
-                if (p.getLocation().add(x, -0.8, z).getBlock().getType().isSolid()) return true;
-            }
-        }
-        return false;
-    }
-
-    public void cleanup(UUID uuid) {
-        lastY.remove(uuid);
-        predictedVelocityY.remove(uuid);
-        bufferA.remove(uuid);
-        bufferB.remove(uuid);
-        bufferStuck.remove(uuid);
-        lastMove.remove(uuid);
-        lastSafeLocation.remove(uuid);
-        airTicks.remove(uuid);
-        velocityGraceTicks.remove(uuid);
-        elytraGraceTicks.remove(uuid);
-        wasGliding.remove(uuid);
-    }
+    public void cleanup(UUID uuid) { states.remove(uuid); }
 }

@@ -1,23 +1,47 @@
-# -----------------------------------------------------
-# Guardian AntiCheat Configuration - By MrQendyxz
-# -----------------------------------------------------
-
-# Discord Webhook Integration
 webhook:
   enabled: false
   url: "none"
 
-# In-game alert message format
-# %player%, %check%, %buffer%, %brand%, %vl%
 alert-message: "§c§lGuardian §8» §f%player% §7failed §f%check% §8(§7x%buffer%§8) §8[§7Client: %brand%§8]"
 
 punishments:
-  # Punishment type: KICK, BAN, or NONE
   type: "NONE"
-
-  # Total violation level (VL) required to trigger the punishment
   threshold: 20
-
+  decay-seconds: 30
   kick-message: "§c§lGuardian AntiCheat\n\n§7You have been kicked for suspicious behavior.\n§fLast Check: §c%check%"
-
   ban-message: "§c§lGuardian AntiCheat\n\n§7You have been permanently banned for cheating.\n§fDetection: §c%check%"
+
+freeze:
+  timeout-seconds: 300
+  message-cooldown-seconds: 3
+
+checks:
+  fly:
+    setback-buffer: 3
+  speed:
+    setback-buffer: 3
+  autoclicker:
+    max-cps: 40
+  fastplace:
+    max-per-second: 25
+
+
+scanner:
+  enabled: true
+  scan-on-join: true
+  join-delay-seconds: 3
+  enforce-on-command: false
+  kick-message: "&c&lGuardian AntiCheat\n\n&7Blocked modification detected.\n&fMod: &c%mod%"
+  ban-message: "&c&lGuardian AntiCheat\n\n&7You have been banned for using a blocked modification.\n&fMod: &c%mod%"
+  mods:
+    meteor: BAN
+    wurst: BAN
+    aristois: BAN
+    liquidbounce: BAN
+    rusherhack: BAN
+    impact: BAN
+    baritone: KICK
+    freecam: KICK
+    xaerominimap: ALERT
+    voxelmap: ALERT
+    journeymap: NONE

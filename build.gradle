@@ -1,9 +1,10 @@
 plugins {
     id 'java'
+    id 'com.gradleup.shadow' version '8.3.6'
 }
 
 group = 'org.mrqendyxz'
-version = '1.1.7-NinjaMelon'
+version = '1.1.9'
 
 repositories {
     mavenCentral()
@@ -18,7 +19,9 @@ repositories {
 }
 
 dependencies {
+    implementation("org.bstats:bstats-bukkit:3.2.1")
     compileOnly("org.spigotmc:spigot-api:1.21-R0.1-SNAPSHOT")
+    testImplementation("org.spigotmc:spigot-api:1.21-R0.1-SNAPSHOT")
     implementation("com.github.retrooper:packetevents-spigot:2.9.5")
 }
 
@@ -47,4 +50,26 @@ processResources {
     filesMatching('plugin.yml') {
         expand props
     }
+}
+
+tasks.register('regressionTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'org.mrqendyxz.guardianv3.RegressionTests'
+}
+check.dependsOn regressionTest
+
+tasks.named('jar') {
+    archiveClassifier.set('plain')
+}
+tasks.named('shadowJar') {
+    archiveClassifier.set('')
+    configurations = [project.configurations.runtimeClasspath]
+    dependencies {
+        exclude { it.moduleGroup != 'org.bstats' }
+    }
+    relocate 'org.bstats', 'org.mrqendyxz.guardianv3.libs.bstats'
+}
+tasks.named('build') {
+    dependsOn tasks.named('shadowJar')
 }
